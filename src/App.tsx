@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 
-const DVLA_API_KEY = "skaircon-XJKwha827rHchbw";
 
 interface CarInfo {
   make: string;
