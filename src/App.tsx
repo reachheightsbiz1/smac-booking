@@ -46,94 +46,45 @@ function decodeRegYear(reg: string): number | null {
   return null;
 }
 
-// vehicles.json rows are objects with keys matching the spreadsheet columns.
-// We try to find the best match using make + model + engineCapacity + year from DVLA.
-// Spreadsheet expected columns (case-insensitive): Make, Model, Engine (cc or litres), Year From, Year To, Refrigerant/Gas Type, Grams/Quantity
-function lookupVehicle(
-  vehicleData: any[],
-  make: string,
-  model: string,
-  year: number,
-  engineCapacity: number | null
-) {
-  if (!vehicleData || vehicleData.length === 0 || !make) return null;
+// vehicles.json format: [make, model, yearFrom, yearTo, refrigerant(0=R134a 1=R1234yf), grams]
+// DVLA returns make e.g. FORD and model e.g. FOCUS
+// Spreadsheet has model e.g. FOCUS III 1.6 TI-VCT so we check if spreadsheet model contains dvla model words
+function lookupVehicle(vehicleData: any[], make: string, model: string, year: number) {
+  if (!vehicleData || !make || !year) return null;
 
-  // Normalise helper
-  const norm = (s: any) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const makeUpper = make.toUpperCase().trim();
+  const modelUpper = (model || "").toUpperCase().trim();
 
-  const makN = norm(make);
-  const modN = norm(model);
+  // Filter by exact make + year range
+  const makeYearMatches = vehicleData.filter((row: any[]) =>
+    row[0] === makeUpper && year >= row[2] && year <= row[3]
+  );
+  if (makeYearMatches.length === 0) return null;
 
-  // Helper: extract a numeric value from a row for a list of candidate keys
-  const getNum = (row: any, keys: string[]) => {
-    for (const k of keys) {
-      const v = parseFloat(row[k]);
-      if (!isNaN(v)) return v;
-    }
-    return null;
-  };
-
-  // Helper: get string from row by candidate keys
-  const getStr = (row: any, keys: string[]) => {
-    for (const k of keys) {
-      if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== "") {
-        return String(row[k]).trim();
-      }
-    }
-    return null;
-  };
-
-  // Score each row — higher = better match
-  const scored = vehicleData.map((row: any) => {
-    let score = 0;
-
-    const rowMake = norm(getStr(row, ["Make", "make", "MAKE"]) || "");
-    const rowModel = norm(getStr(row, ["Model", "model", "MODEL", "Description"]) || "");
-    const rowYearFrom = getNum(row, ["Year From", "YearFrom", "year_from", "Year", "year"]);
-    const rowYearTo = getNum(row, ["Year To", "YearTo", "year_to"]) || new Date().getFullYear();
-    const rowEngineRaw = getNum(row, ["Engine", "engine", "Engine CC", "EngineCC", "Capacity", "capacity"]);
-
-    // Make match (required)
-    if (!rowMake || !makN.includes(rowMake) && !rowMake.includes(makN)) return { score: -1, row };
-    score += 10;
-
-    // Model match
-    if (modN && rowModel && (modN.includes(rowModel) || rowModel.includes(modN))) score += 10;
-
-    // Year range match
-    if (rowYearFrom && year >= rowYearFrom && year <= rowYearTo) score += 8;
-    else if (rowYearFrom && Math.abs(year - rowYearFrom) <= 2) score += 3;
-
-    // Engine match — spreadsheet may store in cc (e.g. 1998) or litres (e.g. 2.0)
-    if (engineCapacity && rowEngineRaw) {
-      const rowCC = rowEngineRaw < 20 ? Math.round(rowEngineRaw * 1000) : rowEngineRaw; // convert litres → cc
-      if (Math.abs(rowCC - engineCapacity) <= 100) score += 8;
-      else if (Math.abs(rowCC - engineCapacity) <= 300) score += 3;
-    }
-
-    return { score, row };
-  });
-
-  const best = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score)[0];
-  if (!best) return null;
-
-  const row = best.row;
-
-  // Read refrigerant
-  const refRaw = getStr(row, ["Refrigerant", "Gas Type", "GasType", "gas_type", "Ref", "ref"]) || "";
-  let refrigerant = "R134a";
-  if (refRaw.includes("1234") || refRaw.toUpperCase().includes("YF")) refrigerant = "R1234yf";
-  else if (refRaw.includes("134") || refRaw.toUpperCase() === "R134A") refrigerant = "R134a";
-  else {
-    // Numeric flag: 1 = R1234yf, 0 = R134a (old format)
-    const flag = getNum(row, ["Refrigerant", "ref"]);
-    if (flag === 1) refrigerant = "R1234yf";
+  // If we have a model from DVLA, score by how well it matches spreadsheet model
+  let best: any[] | null = null;
+  if (modelUpper) {
+    const dvlaWords = modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length > 2);
+    const scored = makeYearMatches.map((row: any[]) => {
+      const sheetModel: string = (row[1] || "").toUpperCase();
+      const matchCount = dvlaWords.filter((w: string) => sheetModel.includes(w)).length;
+      return { row, score: matchCount };
+    });
+    scored.sort((a: any, b: any) => b.score - a.score);
+    if (scored[0].score > 0) best = scored[0].row;
   }
 
-  // Read grams
-  const grams = Math.round(getNum(row, ["Grams", "grams", "Quantity", "quantity", "Gas Amount", "Amount", "amount"]) || 600);
+  // Fallback: most common refrigerant + average grams for that make/year
+  if (!best) {
+    const r1Count = makeYearMatches.filter((r: any[]) => r[4] === 1).length;
+    const r0Count = makeYearMatches.filter((r: any[]) => r[4] === 0).length;
+    const dominantRef = r1Count >= r0Count ? 1 : 0;
+    const sameRef = makeYearMatches.filter((r: any[]) => r[4] === dominantRef);
+    const avgGrams = Math.round(sameRef.reduce((s: number, r: any[]) => s + r[5], 0) / sameRef.length);
+    return { refrigerant: dominantRef === 1 ? "R1234yf" : "R134a", grams: avgGrams };
+  }
 
-  return { refrigerant, grams };
+  return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
 }
 
 async function lookupDVLA(reg: string) {
@@ -154,7 +105,6 @@ async function lookupDVLA(reg: string) {
       model: data.model || "",
       year: data.yearOfManufacture || null,
       colour: data.colour || "",
-      engineCapacity: data.engineCapacity || null, // cc e.g. 1998
     };
   } catch {
     return null;
@@ -188,12 +138,10 @@ export default function App() {
     let make = "";
     let year: number | null = null;
     let model = "";
-    let engineCapacity: number | null = null;
     if (dvla && dvla.year) {
       make = dvla.make;
       model = dvla.model;
       year = dvla.year;
-      engineCapacity = dvla.engineCapacity || null;
     } else {
       year = decodeRegYear(clean);
     }
@@ -205,7 +153,7 @@ export default function App() {
     let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
     let grams = 600;
     if (vehicleData && vehicleData.length > 0 && make) {
-      const match = lookupVehicle(vehicleData, make, model, year, engineCapacity);
+      const match = lookupVehicle(vehicleData, make, model, year);
       if (match) { refrigerant = match.refrigerant; grams = match.grams; }
     }
     const price = calcPrice(refrigerant, grams);
