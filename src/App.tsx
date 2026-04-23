@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 
+// Year-based fallback lookup built from Bruce's spreadsheet
+// Format: year -> [refrigerantFlag (0=R134a, 1=R1234yf), mostCommonGrams]
+const YEAR_FALLBACK: Record<number, [number, number]> = {1990: [0, 790], 1991: [0, 700], 1992: [0, 800], 1993: [0, 800], 1994: [0, 800], 1995: [0, 750], 1996: [0, 750], 1997: [0, 750], 1998: [0, 750], 1999: [0, 750], 2000: [0, 750], 2001: [0, 750], 2002: [0, 650], 2003: [0, 650], 2004: [0, 550], 2005: [0, 550], 2006: [0, 550], 2007: [0, 550], 2008: [0, 550], 2009: [0, 500], 2010: [0, 500], 2011: [0, 500], 2012: [0, 500], 2013: [0, 500], 2014: [0, 500], 2015: [0, 500], 2016: [0, 500], 2017: [0, 500], 2018: [0, 500], 2019: [0, 500], 2020: [0, 500], 2021: [0, 500], 2022: [0, 500], 2023: [0, 500], 2024: [0, 500], 2025: [0, 500]};
 
 interface CarInfo {
   make: string;
@@ -147,11 +150,23 @@ export default function App() {
       setLoading(false);
       return;
     }
+    // Try exact spreadsheet lookup using make+model+year from DVLA
     let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
     let grams = 600;
     if (vehicleData && vehicleData.length > 0 && make) {
       const match = lookupVehicle(vehicleData, make, model, year);
-      if (match) { refrigerant = match.refrigerant; grams = match.grams; }
+      if (match) {
+        refrigerant = match.refrigerant;
+        grams = match.grams;
+      } else {
+        // DVLA gave make but no spreadsheet match - use year fallback from spreadsheet
+        const fb = YEAR_FALLBACK[year];
+        if (fb) { refrigerant = fb[0] === 1 ? "R1234yf" : "R134a"; grams = fb[1]; }
+      }
+    } else {
+      // No DVLA data at all - use year fallback from spreadsheet
+      const fb = YEAR_FALLBACK[year];
+      if (fb) { refrigerant = fb[0] === 1 ? "R1234yf" : "R134a"; grams = fb[1]; }
     }
     const price = calcPrice(refrigerant, grams);
     setCarInfo({ make: make || "Your Vehicle", model, year, refrigerant, grams, price, dvlaFound: !!dvla });
