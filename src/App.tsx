@@ -1,11 +1,26 @@
 import { useState, useEffect } from "react";
 
-// ─── CONFIG ──────────────────────────────────────────────────────────────────
 const DVLA_API_KEY = "skaircon-XJKwha827rHchbw";
-// Using Netlify Forms — no ID needed, handled automatically by Netlify
-// Notification goes to bruce@stockportmobileaircon.co.uk via Netlify Forms dashboard
 
-// ─── PRICING (2026) ──────────────────────────────────────────────────────────
+interface CarInfo {
+  make: string;
+  model: string;
+  year: number;
+  refrigerant: string;
+  grams: number;
+  price: { base: number; extra: number; total: number };
+  dvlaFound: boolean;
+}
+
+interface FormData {
+  name: string;
+  phone: string;
+  email: string;
+  postcode: string;
+  date: string;
+  time: string;
+}
+
 function calcPrice(refrigerant: string, grams: number) {
   if (refrigerant === "R1234yf") {
     const base = 120;
@@ -18,8 +33,7 @@ function calcPrice(refrigerant: string, grams: number) {
   }
 }
 
-// ─── UK REG PLATE YEAR DECODER (fallback if DVLA API unavailable) ────────────
-function decodeRegYear(reg: string) {
+function decodeRegYear(reg: string): number | null {
   const clean = reg.replace(/\s/g, "").toUpperCase();
   const m = clean.match(/^[A-Z]{2}(\d{2})[A-Z]{3}$/);
   if (m) {
@@ -32,39 +46,26 @@ function decodeRegYear(reg: string) {
   return null;
 }
 
-// ─── SPREADSHEET LOOKUP ───────────────────────────────────────────────────────
-// vehicles.json format: [make, desc, startYr, endYr, refCode(0=R134a,1=R1234yf), grams]
 function lookupVehicle(vehicleData: any[], make: string, year: number) {
   if (!vehicleData || !make || !year) return null;
   const makeUpper = make.toUpperCase();
-
-  // Find all entries matching make + year range
-  const matches = vehicleData.filter(([m, , startYr, endYr]) => {
+  const matches = vehicleData.filter(([m, , startYr, endYr]: [string, string, number, number]) => {
     return m === makeUpper && year >= startYr && year <= endYr;
   });
-
   if (matches.length === 0) return null;
-
-  // Pick the most specific match (shortest desc = most general model, good default)
-  // Or just return most common refrigerant for that make+year combo
-  const refCounts = matches.reduce((acc, [, , , , ref]) => {
+  const refCounts: Record<number, number> = matches.reduce((acc: Record<number, number>, [, , , , ref]: [string, string, number, number, number]) => {
     acc[ref] = (acc[ref] || 0) + 1;
     return acc;
   }, {});
-
-  // Pick majority refrigerant, average grams
-  const dominantRef = refCounts[1] >= refCounts[0] ? 1 : 0;
-  const matchingRef = matches.filter(([, , , , ref]) => ref === dominantRef);
-  const avgGrams = Math.round(matchingRef.reduce((sum, [, , , , , g]) => sum + g, 0) / matchingRef.length);
-
+  const dominantRef = (refCounts[1] || 0) >= (refCounts[0] || 0) ? 1 : 0;
+  const matchingRef = matches.filter(([, , , , ref]: [string, string, number, number, number]) => ref === dominantRef);
+  const avgGrams = Math.round(matchingRef.reduce((sum: number, [, , , , , g]: [string, string, number, number, number, number]) => sum + g, 0) / matchingRef.length);
   return {
     refrigerant: dominantRef === 1 ? "R1234yf" : "R134a",
     grams: avgGrams,
-    matchCount: matches.length
   };
 }
 
-// ─── DVLA API CALL ────────────────────────────────────────────────────────────
 async function lookupDVLA(reg: string) {
   try {
     const clean = reg.replace(/\s/g, "").toUpperCase();
@@ -72,144 +73,98 @@ async function lookupDVLA(reg: string) {
       "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiries/v1/vehicles",
       {
         method: "POST",
-        headers: {
-          "x-api-key": DVLA_API_KEY,
-          "Content-Type": "application/json",
-        },
+        headers: { "x-api-key": DVLA_API_KEY, "Content-Type": "application/json" },
         body: JSON.stringify({ registrationNumber: clean }),
       }
     );
-    if (!res.ok) throw new Error("DVLA API error");
+    if (!res.ok) throw new Error("DVLA error");
     const data = await res.json();
     return {
       make: data.make || "",
       model: data.model || "",
       year: data.yearOfManufacture || null,
       colour: data.colour || "",
-      fuelType: data.fuelType || "",
     };
   } catch {
     return null;
   }
 }
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [step, setStep] = useState(0);
   const [reg, setReg] = useState("");
   const [regError, setRegError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [vehicleData, setVehicleData] = useState(null);
-  const [carInfo, setCarInfo] = useState(null); // { make, year, refrigerant, grams, price }
-  const [form, setForm] = useState({ name: "", phone: "", email: "", postcode: "", date: "", time: "" });
+  const [vehicleData, setVehicleData] = useState<any[] | null>(null);
+  const [carInfo, setCarInfo] = useState<CarInfo | null>(null);
+  const [form, setForm] = useState<FormData>({ name: "", phone: "", email: "", postcode: "", date: "", time: "" });
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [done, setDone] = useState(false);
 
-  // Load vehicle database on mount
   useEffect(() => {
     fetch("/vehicles.json")
-      .then(r => r.json())
-      .then(setVehicleData)
+      .then((r) => r.json())
+      .then((d) => setVehicleData(d))
       .catch(() => setVehicleData([]));
   }, []);
 
   const handleRegLookup = async () => {
     const clean = reg.replace(/\s/g, "").toUpperCase();
-    if (clean.length < 2) {
-      setRegError("Please enter a valid UK registration plate.");
-      return;
-    }
+    if (clean.length < 2) { setRegError("Please enter a valid UK registration plate."); return; }
     setRegError("");
     setLoading(true);
-
-    // 1. Try DVLA API
     const dvla = await lookupDVLA(clean);
-
     let make = "";
-    let year = null;
+    let year: number | null = null;
     let model = "";
-
     if (dvla && dvla.year) {
       make = dvla.make;
       model = dvla.model;
       year = dvla.year;
     } else {
-      // Fallback: decode year from plate format
       year = decodeRegYear(clean);
-      make = "";
     }
-
     if (!year) {
       setRegError("Couldn't recognise this registration. Please check and try again.");
       setLoading(false);
       return;
     }
-
-    // 2. Look up in vehicle spreadsheet
-    let refrigerant = null;
+    let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
     let grams = 600;
-
     if (vehicleData && vehicleData.length > 0 && make) {
       const match = lookupVehicle(vehicleData, make, year);
-      if (match) {
-        refrigerant = match.refrigerant;
-        grams = match.grams;
-      }
+      if (match) { refrigerant = match.refrigerant; grams = match.grams; }
     }
-
-    // 3. Fallback: year-based rule (pre/post 2017)
-    if (!refrigerant) {
-      refrigerant = year >= 2017 ? "R1234yf" : "R134a";
-      grams = 600;
-    }
-
     const price = calcPrice(refrigerant, grams);
-
-    setCarInfo({
-      make: make || "Your Vehicle",
-      model,
-      year,
-      refrigerant,
-      grams,
-      price,
-      dvlaFound: !!dvla,
-    });
-
+    setCarInfo({ make: make || "Your Vehicle", model, year, refrigerant, grams, price, dvlaFound: !!dvla });
     setLoading(false);
     setStep(1);
   };
 
   const handleSubmit = async () => {
+    if (!carInfo) return;
     setSubmitting(true);
     try {
-      // Netlify Forms: submit as URL-encoded form data
-      const formData = new URLSearchParams();
-      formData.append("form-name", "smac-bookings");
-      formData.append("name", form.name);
-      formData.append("phone", form.phone);
-      formData.append("email", form.email);
-      formData.append("postcode", form.postcode);
-      formData.append("date", form.date);
-      formData.append("time", form.time);
-      formData.append("registration", reg.toUpperCase());
-      formData.append("make", carInfo.make);
-      formData.append("model", carInfo.model);
-      formData.append("year", carInfo.year);
-      formData.append("refrigerant", carInfo.refrigerant);
-      formData.append("grams", carInfo.grams + "g");
-      formData.append("total_price", "£" + carInfo.price.total);
-
-      const res = await fetch("/", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: formData.toString(),
-      });
-
-      if (!res.ok) throw new Error("Submit failed");
-      setSubmitted(true);
+      const fd = new URLSearchParams();
+      fd.append("form-name", "smac-bookings");
+      fd.append("name", form.name);
+      fd.append("phone", form.phone);
+      fd.append("email", form.email);
+      fd.append("postcode", form.postcode);
+      fd.append("date", form.date);
+      fd.append("time", form.time);
+      fd.append("registration", reg.toUpperCase());
+      fd.append("make", carInfo.make);
+      fd.append("model", carInfo.model);
+      fd.append("year", String(carInfo.year));
+      fd.append("refrigerant", carInfo.refrigerant);
+      fd.append("grams", carInfo.grams + "g");
+      fd.append("total_price", "£" + carInfo.price.total);
+      await fetch("/", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: fd.toString() });
+      setDone(true);
       setStep(3);
     } catch {
-      alert("Something went wrong. Please call Bruce directly on +44 7442 550123");
+      alert("Something went wrong. Please call Bruce on +44 7442 550123");
     }
     setSubmitting(false);
   };
@@ -217,47 +172,33 @@ export default function App() {
   const isFormValid = form.name && form.phone && form.postcode && form.date && form.time;
 
   return (
-    <div style={{
-      minHeight: "100vh", background: "#0a0a0a",
-      fontFamily: "'Barlow', sans-serif", color: "#fff",
-      display: "flex", flexDirection: "column", alignItems: "center",
-      padding: "20px 16px 48px"
-    }}>
+    <div style={{ minHeight: "100vh", background: "#0a0a0a", fontFamily: "'Barlow', sans-serif", color: "#fff", display: "flex", flexDirection: "column", alignItems: "center", padding: "20px 16px 48px" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;500;600;700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;600;700;900&display=swap');
         * { box-sizing: border-box; }
         @keyframes fadeUp { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .btn { cursor: pointer; border: none; transition: all 0.2s; }
-        .btn:hover { transform: translateY(-2px); }
-        .btn:active { transform: translateY(0); }
-        input:focus { border-color: #3b82f6 !important; outline: none; }
-        .plate::placeholder { color: rgba(0,0,0,0.3); }
+        .btn { cursor:pointer; border:none; transition:all 0.2s; }
+        .btn:hover { transform:translateY(-2px); }
+        input:focus { border-color:#3b82f6!important; outline:none; }
+        .plate::placeholder { color:rgba(0,0,0,0.3); }
       `}</style>
 
       {/* Logo */}
       <div style={{ textAlign: "center", marginBottom: 24, animation: "fadeUp 0.4s ease" }}>
-        <div style={{
-          width: 68, height: 68, borderRadius: "50%", background: "#1a1a1a",
-          border: "2px solid #2a2a2a", display: "flex", flexDirection: "column",
-          alignItems: "center", justifyContent: "center", margin: "0 auto 12px"
-        }}>
-          <div style={{ color: "#fff", fontFamily: "'Bebas Neue', sans-serif", fontSize: 19, letterSpacing: 3, lineHeight: 1 }}>SMAC</div>
+        <div style={{ width: 68, height: 68, borderRadius: "50%", background: "#1a1a1a", border: "2px solid #2a2a2a", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+          <div style={{ color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 19, letterSpacing: 3, lineHeight: 1 }}>SMAC</div>
           <div style={{ display: "flex", gap: 1, marginTop: 3 }}>
-            {[0,1,2,3,4].map(i => (
-              <div key={i} style={{ width: 6, height: 3, background: i < 3 ? "#3b82f6" : "#ef4444", borderRadius: 1 }} />
-            ))}
+            {[0,1,2,3,4].map(i => <div key={i} style={{ width: 6, height: 3, background: i < 3 ? "#3b82f6" : "#ef4444", borderRadius: 1 }} />)}
           </div>
         </div>
-        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 3, color: "#fff" }}>
-          Stockport Mobile Aircon
-        </div>
+        <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 22, letterSpacing: 3 }}>Stockport Mobile Aircon</div>
         <div style={{ color: "#6b7280", fontSize: 13, marginTop: 3 }}>Car AC Regas · We Come To You</div>
       </div>
 
       {/* Progress */}
       <div style={{ display: "flex", gap: 6, width: "100%", maxWidth: 420, marginBottom: 24 }}>
-        {["Reg Plate", "Your Price", "Book", "Done"].map((label, i) => (
+        {["Reg Plate","Your Price","Book","Done"].map((label, i) => (
           <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
             <div style={{ height: 4, width: "100%", borderRadius: 99, background: i < step ? "#22c55e" : i === step ? "#3b82f6" : "#1f1f1f", transition: "background 0.3s" }} />
             <div style={{ color: i <= step ? "#9ca3af" : "#2d2d2d", fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
@@ -268,255 +209,137 @@ export default function App() {
       {/* Card */}
       <div style={{ width: "100%", maxWidth: 420, background: "#111", border: "1px solid #1f1f1f", borderRadius: 20, padding: "26px 22px", animation: "fadeUp 0.4s ease" }}>
 
-        {/* STEP 0 — REG PLATE */}
+        {/* STEP 0 */}
         {step === 0 && (
           <div>
             <div style={{ color: "#6b7280", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, fontWeight: 700, marginBottom: 4 }}>Step 1</div>
-            <h2 style={{ margin: "0 0 6px", fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, letterSpacing: 2 }}>Enter Your Reg Plate</h2>
-            <p style={{ color: "#6b7280", fontSize: 13, margin: "0 0 22px", lineHeight: 1.6 }}>
-              We'll instantly find your car and show you the exact gas type and price.
-            </p>
-
-            {/* Plate input */}
-            <div style={{
-              background: "#f5cb00", borderRadius: 10, padding: "6px 14px 6px 6px",
-              display: "flex", alignItems: "center", gap: 10, border: "3px solid #1a1a1a", marginBottom: 10
-            }}>
+            <h2 style={{ margin: "0 0 6px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 26, letterSpacing: 2 }}>Enter Your Reg Plate</h2>
+            <p style={{ color: "#6b7280", fontSize: 13, margin: "0 0 22px", lineHeight: 1.6 }}>We'll instantly find your car and show you the exact gas type and price.</p>
+            <div style={{ background: "#f5cb00", borderRadius: 10, padding: "6px 14px 6px 6px", display: "flex", alignItems: "center", gap: 10, border: "3px solid #1a1a1a", marginBottom: 10 }}>
               <div style={{ background: "#003087", borderRadius: 6, padding: "4px 5px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                 <div style={{ color: "#f5cb00", fontSize: 8, fontWeight: 900 }}>GB</div>
                 <div style={{ color: "#f5cb00", fontSize: 9 }}>★</div>
               </div>
-              <input
-                className="plate"
-                value={reg}
-                onChange={e => { setReg(e.target.value.toUpperCase()); setRegError(""); }}
-                onKeyDown={e => e.key === "Enter" && handleRegLookup()}
-                placeholder="AB17 CDE"
-                maxLength={8}
-                style={{ background: "transparent", border: "none", color: "#1a1a1a", fontSize: 30, fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 6, flex: 1, width: "100%" }}
-              />
+              <input className="plate" value={reg} onChange={e => { setReg(e.target.value.toUpperCase()); setRegError(""); }} onKeyDown={e => e.key === "Enter" && handleRegLookup()} placeholder="AB17 CDE" maxLength={8} style={{ background: "transparent", border: "none", color: "#1a1a1a", fontSize: 30, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 6, flex: 1, width: "100%" }} />
             </div>
-
-            {regError && (
-              <div style={{ color: "#ef4444", fontSize: 13, padding: "8px 12px", background: "rgba(239,68,68,0.08)", borderRadius: 8, marginBottom: 12 }}>
-                {regError}
-              </div>
-            )}
-
-            <div style={{ color: "#374151", fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>
-              💡 Don't know your reg? Check your V5C logbook or dashboard sticker.
-            </div>
-
-            <button className="btn" onClick={handleRegLookup} disabled={loading} style={{
-              width: "100%", padding: "16px",
-              background: loading ? "#1f1f1f" : "linear-gradient(135deg, #2563eb, #3b82f6)",
-              borderRadius: 12, color: loading ? "#4b5563" : "#fff",
-              fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 3,
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 10
-            }}>
-              {loading ? (
-                <>
-                  <div style={{ width: 18, height: 18, border: "2px solid #4b5563", borderTopColor: "#9ca3af", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-                  Looking up your car...
-                </>
-              ) : "Check My Car →"}
+            {regError && <div style={{ color: "#ef4444", fontSize: 13, padding: "8px 12px", background: "rgba(239,68,68,0.08)", borderRadius: 8, marginBottom: 12 }}>{regError}</div>}
+            <div style={{ color: "#374151", fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>💡 Don't know your reg? Check your V5C logbook or dashboard sticker.</div>
+            <button className="btn" onClick={handleRegLookup} disabled={loading} style={{ width: "100%", padding: "16px", background: loading ? "#1f1f1f" : "linear-gradient(135deg,#2563eb,#3b82f6)", borderRadius: 12, color: loading ? "#4b5563" : "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 3, display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+              {loading ? <><div style={{ width: 18, height: 18, border: "2px solid #4b5563", borderTopColor: "#9ca3af", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />Looking up your car...</> : "Check My Car →"}
             </button>
           </div>
         )}
 
-        {/* STEP 1 — RESULT */}
+        {/* STEP 1 */}
         {step === 1 && carInfo && (
           <div>
             <div style={{ color: "#6b7280", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, fontWeight: 700, marginBottom: 4 }}>Step 2 — Your Quote</div>
-            <h2 style={{ margin: "0 0 14px", fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, letterSpacing: 2 }}>Your Car Needs</h2>
-
-            {/* Reg badge */}
-            <div style={{ display: "inline-block", background: "#f5cb00", color: "#1a1a1a", fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 4, padding: "3px 14px", borderRadius: 6, marginBottom: 14 }}>
-              {reg.toUpperCase()}
-            </div>
-
+            <h2 style={{ margin: "0 0 14px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 26, letterSpacing: 2 }}>Your Car Needs</h2>
+            <div style={{ display: "inline-block", background: "#f5cb00", color: "#1a1a1a", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 4, padding: "3px 14px", borderRadius: 6, marginBottom: 14 }}>{reg.toUpperCase()}</div>
             {carInfo.make !== "Your Vehicle" && (
               <div style={{ color: "#9ca3af", fontSize: 14, marginBottom: 14 }}>
                 {carInfo.make} {carInfo.model} · {carInfo.year}
                 {carInfo.dvlaFound && <span style={{ color: "#22c55e", fontSize: 11, marginLeft: 6 }}>✓ DVLA Verified</span>}
               </div>
             )}
-
-            {/* Gas type card */}
-            <div style={{
-              background: carInfo.refrigerant === "R1234yf" ? "linear-gradient(135deg,#1a1a2e,#16213e)" : "linear-gradient(135deg,#1a1a1a,#2d1800)",
-              border: `2px solid ${carInfo.refrigerant === "R1234yf" ? "#3b82f6" : "#f59e0b"}`,
-              borderRadius: 14, padding: "20px", marginBottom: 14
-            }}>
+            <div style={{ background: carInfo.refrigerant === "R1234yf" ? "linear-gradient(135deg,#1a1a2e,#16213e)" : "linear-gradient(135deg,#1a1a1a,#2d1800)", border: `2px solid ${carInfo.refrigerant === "R1234yf" ? "#3b82f6" : "#f59e0b"}`, borderRadius: 14, padding: "20px", marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div>
                   <div style={{ color: "#9ca3af", fontSize: 11, textTransform: "uppercase", letterSpacing: 2 }}>Gas Type</div>
-                  <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, letterSpacing: 3, color: carInfo.refrigerant === "R1234yf" ? "#60a5fa" : "#f59e0b" }}>
-                    {carInfo.refrigerant}
-                  </div>
+                  <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, letterSpacing: 3, color: carInfo.refrigerant === "R1234yf" ? "#60a5fa" : "#f59e0b" }}>{carInfo.refrigerant}</div>
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ color: "#9ca3af", fontSize: 11, textTransform: "uppercase", letterSpacing: 2 }}>Quantity</div>
-                  <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, letterSpacing: 2, color: "#fff" }}>
-                    {carInfo.grams}g
-                  </div>
+                  <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, letterSpacing: 2, color: "#fff" }}>{carInfo.grams}g</div>
                 </div>
               </div>
-
               <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 10, padding: "12px 14px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <div style={{ color: "#6b7280", fontSize: 11 }}>
-                      Base price (up to 600g) · {carInfo.grams > 600 ? `+${carInfo.grams - 600}g extra` : "within base"}
-                    </div>
-                    {carInfo.price.extra > 0 && (
-                      <div style={{ color: "#9ca3af", fontSize: 12, marginTop: 2 }}>
-                        Base £{carInfo.price.base} + extra £{carInfo.price.extra}
-                      </div>
-                    )}
+                    <div style={{ color: "#6b7280", fontSize: 11 }}>Base price (up to 600g){carInfo.grams > 600 ? ` + ${carInfo.grams - 600}g extra` : ""}</div>
+                    {carInfo.price.extra > 0 && <div style={{ color: "#9ca3af", fontSize: 12, marginTop: 2 }}>Base £{carInfo.price.base} + extra £{carInfo.price.extra}</div>}
                   </div>
-                  <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 34, color: carInfo.refrigerant === "R1234yf" ? "#60a5fa" : "#f59e0b" }}>
-                    £{carInfo.price.total}
-                  </div>
+                  <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 34, color: carInfo.refrigerant === "R1234yf" ? "#60a5fa" : "#f59e0b" }}>£{carInfo.price.total}</div>
                 </div>
               </div>
             </div>
-
-            {/* Inclusions */}
             <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
-              {["Full regas + leak check included", "Mobile — we come to your location", "Stockport & surrounding areas", "Same-week appointments available"].map((t, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, color: "#d1d5db", fontSize: 13, padding: "3px 0" }}>
-                  <span style={{ color: "#22c55e" }}>✓</span> {t}
-                </div>
+              {["Full regas + leak check included","Mobile — we come to your location","Stockport & surrounding areas","Same-week appointments available"].map((t, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, color: "#d1d5db", fontSize: 13, padding: "3px 0" }}><span style={{ color: "#22c55e" }}>✓</span> {t}</div>
               ))}
             </div>
-
             <div style={{ display: "flex", gap: 10 }}>
               <button className="btn" onClick={() => setStep(0)} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 14, fontWeight: 600 }}>← Back</button>
-              <button className="btn" onClick={() => setStep(2)} style={{ flex: 2, padding: "14px", background: "linear-gradient(135deg,#16a34a,#22c55e)", borderRadius: 12, color: "#fff", fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 3 }}>Book Now →</button>
+              <button className="btn" onClick={() => setStep(2)} style={{ flex: 2, padding: "14px", background: "linear-gradient(135deg,#16a34a,#22c55e)", borderRadius: 12, color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 3 }}>Book Now →</button>
             </div>
           </div>
         )}
 
-        {/* STEP 2 — BOOKING FORM */}
+        {/* STEP 2 */}
         {step === 2 && (
           <div>
             <div style={{ color: "#6b7280", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, fontWeight: 700, marginBottom: 4 }}>Step 3 — Your Details</div>
-            <h2 style={{ margin: "0 0 6px", fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, letterSpacing: 2 }}>Book Your Slot</h2>
+            <h2 style={{ margin: "0 0 6px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 26, letterSpacing: 2 }}>Book Your Slot</h2>
             <p style={{ color: "#6b7280", fontSize: 13, margin: "0 0 18px" }}>We come to you. No garage needed.</p>
-
-            {[
-              { label: "Full Name *", name: "name", type: "text", placeholder: "John Smith" },
-              { label: "Phone Number *", name: "phone", type: "tel", placeholder: "+44 7700 000000" },
-              { label: "Email (optional)", name: "email", type: "email", placeholder: "john@email.com" },
-              { label: "Postcode *", name: "postcode", type: "text", placeholder: "SK1 1AA" },
-            ].map(({ label, name, type, placeholder }) => (
+            {([["Full Name *","name","text","John Smith"],["Phone Number *","phone","tel","+44 7700 000000"],["Email (optional)","email","email","john@email.com"],["Postcode *","postcode","text","SK1 1AA"]] as [string,keyof FormData,string,string][]).map(([label, name, type, placeholder]) => (
               <div key={name} style={{ marginBottom: 12 }}>
                 <label style={{ display: "block", color: "#9ca3af", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 }}>{label}</label>
-                <input
-                  name={name} type={type} placeholder={placeholder}
-                  value={form[name]}
-                  onChange={e => setForm({ ...form, [name]: e.target.value })}
-                  style={{ width: "100%", padding: "12px 14px", background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 15, transition: "border-color 0.2s" }}
-                />
+                <input name={name} type={type} placeholder={placeholder} value={form[name]} onChange={e => setForm({ ...form, [name]: e.target.value })} style={{ width: "100%", padding: "12px 14px", background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 15, transition: "border-color 0.2s" }} />
               </div>
             ))}
-
             <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-              {[
-                { label: "Preferred Date *", name: "date", type: "date" },
-                { label: "Preferred Time *", name: "time", type: "time" }
-              ].map(({ label, name, type }) => (
+              {([["Preferred Date *","date","date"],["Preferred Time *","time","time"]] as [string,keyof FormData,string][]).map(([label, name, type]) => (
                 <div key={name} style={{ flex: 1 }}>
                   <label style={{ display: "block", color: "#9ca3af", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 }}>{label}</label>
-                  <input
-                    name={name} type={type}
-                    value={form[name]}
-                    onChange={e => setForm({ ...form, [name]: e.target.value })}
-                    style={{ width: "100%", padding: "12px 10px", background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 14 }}
-                  />
+                  <input name={name} type={type} value={form[name]} onChange={e => setForm({ ...form, [name]: e.target.value })} style={{ width: "100%", padding: "12px 10px", background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 14 }} />
                 </div>
               ))}
             </div>
-
-            {/* Summary box */}
-            <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
-              <div style={{ color: "#6b7280", fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Booking Summary</div>
-              {[
-                ["Reg", reg.toUpperCase()],
-                ["Service", carInfo?.refrigerant + " Regas"],
-                ["Quantity", carInfo?.grams + "g"],
-                ["Price", "£" + carInfo?.price.total],
-              ].map(([k, v]) => (
-                <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 13 }}>
-                  <span style={{ color: "#6b7280" }}>{k}</span>
-                  <span style={{ color: "#e5e7eb", fontWeight: 600 }}>{v}</span>
-                </div>
-              ))}
-            </div>
-
+            {carInfo && (
+              <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
+                <div style={{ color: "#6b7280", fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Booking Summary</div>
+                {[["Reg", reg.toUpperCase()],["Service", carInfo.refrigerant + " Regas"],["Quantity", carInfo.grams + "g"],["Price", "£" + carInfo.price.total]].map(([k, v]) => (
+                  <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 13 }}>
+                    <span style={{ color: "#6b7280" }}>{k}</span>
+                    <span style={{ color: "#e5e7eb", fontWeight: 600 }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 10 }}>
               <button className="btn" onClick={() => setStep(1)} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 14, fontWeight: 600 }}>← Back</button>
-              <button className="btn" onClick={handleSubmit} disabled={!isFormValid || submitting} style={{
-                flex: 2, padding: "14px",
-                background: isFormValid ? "linear-gradient(135deg,#2563eb,#3b82f6)" : "#1f1f1f",
-                borderRadius: 12, color: isFormValid ? "#fff" : "#4b5563",
-                fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 3,
-                cursor: isFormValid ? "pointer" : "not-allowed",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 8
-              }}>
-                {submitting ? (
-                  <><div style={{ width: 16, height: 16, border: "2px solid #4b5563", borderTopColor: "#9ca3af", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> Booking...</>
-                ) : "Confirm Booking →"}
+              <button className="btn" onClick={handleSubmit} disabled={!isFormValid || submitting} style={{ flex: 2, padding: "14px", background: isFormValid ? "linear-gradient(135deg,#2563eb,#3b82f6)" : "#1f1f1f", borderRadius: 12, color: isFormValid ? "#fff" : "#4b5563", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 3, cursor: isFormValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                {submitting ? <><div style={{ width: 16, height: 16, border: "2px solid #4b5563", borderTopColor: "#9ca3af", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />Booking...</> : "Confirm Booking →"}
               </button>
             </div>
           </div>
         )}
 
-        {/* STEP 3 — CONFIRMED */}
-        {step === 3 && (
+        {/* STEP 3 */}
+        {step === 3 && done && (
           <div style={{ textAlign: "center", animation: "fadeUp 0.4s ease" }}>
             <div style={{ width: 68, height: 68, borderRadius: "50%", background: "linear-gradient(135deg,#16a34a,#22c55e)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, margin: "0 auto 16px" }}>✓</div>
-            <h2 style={{ margin: "0 0 8px", fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, letterSpacing: 2 }}>Booking Received!</h2>
-            <p style={{ color: "#6b7280", fontSize: 14, marginBottom: 22, lineHeight: 1.7 }}>
-              Bruce will confirm your slot shortly. He'll come to your location — no need to visit a garage.
-            </p>
-
-            <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 12, padding: "14px 16px", marginBottom: 20, textAlign: "left" }}>
-              {[
-                ["Name", form.name],
-                ["Phone", form.phone],
-                ["Postcode", form.postcode],
-                ["Date", form.date],
-                ["Time", form.time],
-                ["Reg", reg.toUpperCase()],
-                ["Service", carInfo?.refrigerant + " Regas"],
-                ["Grams", carInfo?.grams + "g"],
-                ["Total Price", "£" + carInfo?.price.total],
-              ].filter(([, v]) => v).map(([k, v]) => (
-                <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1a1a1a", fontSize: 13 }}>
-                  <span style={{ color: "#6b7280" }}>{k}</span>
-                  <span style={{ color: "#e5e7eb", fontWeight: 600 }}>{v}</span>
-                </div>
-              ))}
-            </div>
-
+            <h2 style={{ margin: "0 0 8px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, letterSpacing: 2 }}>Booking Received!</h2>
+            <p style={{ color: "#6b7280", fontSize: 14, marginBottom: 22, lineHeight: 1.7 }}>Bruce will confirm your slot shortly. He'll come to your location — no need to visit a garage.</p>
+            {carInfo && (
+              <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 12, padding: "14px 16px", marginBottom: 20, textAlign: "left" }}>
+                {[["Name",form.name],["Phone",form.phone],["Postcode",form.postcode],["Date",form.date],["Time",form.time],["Reg",reg.toUpperCase()],["Service",carInfo.refrigerant+" Regas"],["Grams",carInfo.grams+"g"],["Total","£"+carInfo.price.total]].filter(([,v])=>v).map(([k,v])=>(
+                  <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1a1a1a", fontSize: 13 }}>
+                    <span style={{ color: "#6b7280" }}>{k}</span>
+                    <span style={{ color: "#e5e7eb", fontWeight: 600 }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 10 }}>
-              <a href="tel:+447442550123" style={{
-                flex: 1, padding: "14px", background: "linear-gradient(135deg,#2563eb,#3b82f6)",
-                borderRadius: 12, color: "#fff", textDecoration: "none",
-                fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: 2,
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-              }}>📞 Call Bruce</a>
-              <button className="btn" onClick={() => { setStep(0); setReg(""); setForm({ name: "", phone: "", email: "", postcode: "", date: "", time: "" }); setCarInfo(null); }} style={{
-                flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 13, fontWeight: 600
-              }}>New Booking</button>
+              <a href="tel:+447442550123" style={{ flex: 1, padding: "14px", background: "linear-gradient(135deg,#2563eb,#3b82f6)", borderRadius: 12, color: "#fff", textDecoration: "none", fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>📞 Call Bruce</a>
+              <button className="btn" onClick={() => { setStep(0); setReg(""); setForm({ name:"",phone:"",email:"",postcode:"",date:"",time:"" }); setCarInfo(null); setDone(false); }} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 13, fontWeight: 600 }}>New Booking</button>
             </div>
           </div>
         )}
       </div>
 
-      {/* Hidden Netlify form detector */}
+      {/* Hidden Netlify form */}
       <form name="smac-bookings" data-netlify="true" hidden>
         <input type="text" name="name" />
         <input type="text" name="phone" />
@@ -533,7 +356,6 @@ export default function App() {
         <input type="text" name="total_price" />
       </form>
 
-      {/* Footer */}
       <div style={{ marginTop: 22, color: "#2d2d2d", fontSize: 11, textAlign: "center", lineHeight: 1.9 }}>
         <div>bruce@stockportmobileaircon.co.uk</div>
         <div>+44 7442 550123 · Stockport & surrounding areas</div>
