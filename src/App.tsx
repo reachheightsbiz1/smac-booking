@@ -90,20 +90,18 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
 async function lookupDVLA(reg: string) {
   try {
     const clean = reg.replace(/\s/g, "").toUpperCase();
-    const res = await fetch(
-      "https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles",
-      {
-        method: "POST",
-        headers: { "x-api-key": DVLA_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({ registrationNumber: clean }),
-      }
-    );
+    // Call our Netlify proxy function - avoids CORS block from browser
+    const res = await fetch("/api/dvla", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ registrationNumber: clean }),
+    });
     if (!res.ok) throw new Error("DVLA error");
     const data = await res.json();
     return {
       make: data.make || "",
       model: data.model || "",
-      year: data.yearOfManufacture || null,
+      year: data.year || null,
       colour: data.colour || "",
     };
   } catch {
