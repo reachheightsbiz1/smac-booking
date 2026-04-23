@@ -3,10 +3,10 @@ import { useState, useEffect } from "react";
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const DVLA_API_KEY = "skaircon-XJKwha827rHchbw";
 // Using Netlify Forms — no ID needed, handled automatically by Netlify
-const BRUCE_EMAIL = "bruce@stockportmobileaircon.co.uk";
+// Notification goes to bruce@stockportmobileaircon.co.uk via Netlify Forms dashboard
 
 // ─── PRICING (2026) ──────────────────────────────────────────────────────────
-function calcPrice(refrigerant, grams) {
+function calcPrice(refrigerant: string, grams: number) {
   if (refrigerant === "R1234yf") {
     const base = 120;
     const extra = grams > 600 ? Math.ceil((grams - 600) / 100) * 20 : 0;
@@ -19,7 +19,7 @@ function calcPrice(refrigerant, grams) {
 }
 
 // ─── UK REG PLATE YEAR DECODER (fallback if DVLA API unavailable) ────────────
-function decodeRegYear(reg) {
+function decodeRegYear(reg: string) {
   const clean = reg.replace(/\s/g, "").toUpperCase();
   const m = clean.match(/^[A-Z]{2}(\d{2})[A-Z]{3}$/);
   if (m) {
@@ -34,7 +34,7 @@ function decodeRegYear(reg) {
 
 // ─── SPREADSHEET LOOKUP ───────────────────────────────────────────────────────
 // vehicles.json format: [make, desc, startYr, endYr, refCode(0=R134a,1=R1234yf), grams]
-function lookupVehicle(vehicleData, make, year) {
+function lookupVehicle(vehicleData: any[], make: string, year: number) {
   if (!vehicleData || !make || !year) return null;
   const makeUpper = make.toUpperCase();
 
@@ -65,7 +65,7 @@ function lookupVehicle(vehicleData, make, year) {
 }
 
 // ─── DVLA API CALL ────────────────────────────────────────────────────────────
-async function lookupDVLA(reg) {
+async function lookupDVLA(reg: string) {
   try {
     const clean = reg.replace(/\s/g, "").toUpperCase();
     const res = await fetch(
