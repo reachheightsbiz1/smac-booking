@@ -26,11 +26,11 @@ interface FormData {
 function calcPrice(refrigerant: string, grams: number) {
   if (refrigerant === "R1234yf") {
     const base = 120;
-    const extra = grams > 600 ? Math.ceil((grams - 600) / 100) * 20 : 0;
+    const extra = grams > 600 ? Math.floor((grams - 600) / 10) * 2 : 0;
     return { base, extra, total: base + extra };
   } else {
     const base = 80;
-    const extra = grams > 600 ? Math.ceil((grams - 600) / 100) * 10 : 0;
+    const extra = grams > 600 ? Math.floor((grams - 600) / 10) * 1 : 0;
     return { base, extra, total: base + extra };
   }
 }
