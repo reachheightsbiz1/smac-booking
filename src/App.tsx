@@ -24,13 +24,28 @@ interface FormData {
 }
 
 function calcPrice(refrigerant: string, grams: number) {
+  // New pricing: per 100g after 600g, with rounding:
+  // - remainder > 50g → round UP to next 100g bracket
+  // - remainder <= 50g → round DOWN (don't charge for that bracket)
   if (refrigerant === "R1234yf") {
     const base = 120;
-    const extra = grams > 600 ? Math.floor((grams - 600) / 10) * 2 : 0;
+    let extra = 0;
+    if (grams > 600) {
+      const over = grams - 600;
+      const remainder = over % 100;
+      const brackets = remainder > 50 ? Math.ceil(over / 100) : Math.floor(over / 100);
+      extra = brackets * 20;
+    }
     return { base, extra, total: base + extra };
   } else {
     const base = 80;
-    const extra = grams > 600 ? Math.floor((grams - 600) / 10) * 1 : 0;
+    let extra = 0;
+    if (grams > 600) {
+      const over = grams - 600;
+      const remainder = over % 100;
+      const brackets = remainder > 50 ? Math.ceil(over / 100) : Math.floor(over / 100);
+      extra = brackets * 10;
+    }
     return { base, extra, total: base + extra };
   }
 }
@@ -289,7 +304,7 @@ export default function App() {
               <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 10, padding: "12px 14px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <div style={{ color: "#6b7280", fontSize: 11 }}>Base price (up to 600g){carInfo.grams > 600 ? ` + ${carInfo.grams - 600}g extra` : ""}</div>
+                    <div style={{ color: "#6b7280", fontSize: 11 }}>Base price (up to 600g){carInfo.grams > 600 ? ` + ${carInfo.grams - 600}g extra (per 100g)` : ""}</div>
                     {carInfo.price.extra > 0 && <div style={{ color: "#9ca3af", fontSize: 12, marginTop: 2 }}>Base £{carInfo.price.base} + extra £{carInfo.price.extra}</div>}
                   </div>
                   <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 34, color: carInfo.refrigerant === "R1234yf" ? "#60a5fa" : "#f59e0b" }}>£{carInfo.price.total}</div>
