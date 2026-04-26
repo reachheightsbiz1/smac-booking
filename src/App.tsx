@@ -24,9 +24,8 @@ interface FormData {
 }
 
 function calcPrice(refrigerant: string, grams: number) {
-  // New pricing: per 100g after 600g, with rounding:
-  // - remainder > 50g → round UP to next 100g bracket
-  // - remainder <= 50g → round DOWN (don't charge for that bracket)
+  // Pricing: base covers up to 600g. After 600g, charged per 100g bracket.
+  // Rounding: remainder > 50g → round UP to next bracket, ≤ 50g → round DOWN.
   if (refrigerant === "R1234yf") {
     const base = 120;
     let extra = 0;
@@ -72,39 +71,55 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   const makeUpper = make.toUpperCase().trim();
   const modelUpper = (model || "").toUpperCase().trim();
 
-  // Filter by exact make + year range
+  // Step 1: Filter by exact make + year range
   const makeYearMatches = vehicleData.filter((row: any[]) =>
     row[0] === makeUpper && year >= row[2] && year <= row[3]
   );
   if (makeYearMatches.length === 0) return null;
 
-  // Score every row by how many DVLA model words appear in the spreadsheet model name
+  // Step 2: If only one result, use it directly — no guessing needed
+  if (makeYearMatches.length === 1) {
+    const r = makeYearMatches[0];
+    return { refrigerant: r[4] === 1 ? "R1234yf" : "R134a", grams: r[5] as number };
+  }
+
+  // Step 3: Score each row by model word matching
+  // Only count words with 3+ chars to avoid noise from "4", "I", etc.
   const dvlaWords = modelUpper
-    ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length > 1)
+    ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 3)
     : [];
 
   const scored = makeYearMatches.map((row: any[]) => {
     const sheetModel: string = (row[1] || "").toUpperCase();
-    const matchCount = dvlaWords.filter((w: string) => sheetModel.includes(w)).length;
-    return { row, score: matchCount };
+    let score = 0;
+    for (const word of dvlaWords) {
+      if (sheetModel.includes(word)) score += word.length; // longer word match = higher weight
+    }
+    // Tiebreaker: prefer narrower year range (more specific entry)
+    const yearSpan = row[3] - row[2];
+    return { row, score, yearSpan };
   });
 
-  // Sort by score descending — pick the single top match if it has any word overlap
-  scored.sort((a: any, b: any) => b.score - a.score);
+  // Sort: highest score first, then narrowest year span as tiebreaker
+  scored.sort((a: any, b: any) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.yearSpan - b.yearSpan;
+  });
+
   const topScore = scored[0].score;
 
+  // Step 4: If we got a meaningful word match, use the best row directly (no averaging)
   if (topScore > 0) {
-    // Use the single best-matching row (exact grams, no averaging)
     const best = scored[0].row;
     return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
   }
 
-  // No model word match — fall back to most common refrigerant for that make/year
-  // Use median grams (not average) to avoid outlier skew
+  // Step 5: No model word matched — fall back to dominant refrigerant by count,
+  // then use median grams (not average) to avoid outlier skew
   const r1Count = makeYearMatches.filter((r: any[]) => r[4] === 1).length;
   const r0Count = makeYearMatches.filter((r: any[]) => r[4] === 0).length;
   const dominantRef = r1Count >= r0Count ? 1 : 0;
-  const sameRef = makeYearMatches
+  const sameRef = [...makeYearMatches]
     .filter((r: any[]) => r[4] === dominantRef)
     .sort((a: any[], b: any[]) => a[5] - b[5]);
   const medianRow = sameRef[Math.floor(sameRef.length / 2)];
@@ -311,7 +326,7 @@ export default function App() {
               <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 10, padding: "12px 14px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <div style={{ color: "#6b7280", fontSize: 11 }}>Base price (up to 600g){carInfo.grams > 600 ? ` + ${carInfo.grams - 600}g extra (per 100g)` : ""}</div>
+                    <div style={{ color: "#6b7280", fontSize: 11 }}>Base price (up to 600g){carInfo.grams > 600 ? ` + ${carInfo.grams - 600}g extra` : ""}</div>
                     {carInfo.price.extra > 0 && <div style={{ color: "#9ca3af", fontSize: 12, marginTop: 2 }}>Base £{carInfo.price.base} + extra £{carInfo.price.extra}</div>}
                   </div>
                   <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 34, color: carInfo.refrigerant === "R1234yf" ? "#60a5fa" : "#f59e0b" }}>£{carInfo.price.total}</div>
