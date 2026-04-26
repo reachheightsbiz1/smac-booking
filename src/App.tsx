@@ -181,9 +181,22 @@ export default function App() {
   const [manualMake, setManualMake] = useState("");
   const [manualModel, setManualModel] = useState("");
 
+  // THIS IS THE NEW X-RAY DIAGNOSTIC USE-EFFECT
   useEffect(() => {
     fetch("/vehicles.json")
-      .then((r) => r.json())
+      .then(async (r) => {
+        const text = await r.text();
+        if (text.trim().startsWith("<")) {
+           alert("ERROR: The system is reading the website instead of the data file. The file is in the wrong folder.");
+           return [];
+        }
+        try {
+           return JSON.parse(text);
+        } catch (e) {
+           alert("ERROR: The JSON data has a syntax error (likely a missing comma or broken bracket from copy-pasting).");
+           return [];
+        }
+      })
       .then((d) => setVehicleData(d))
       .catch(() => setVehicleData([]));
   }, []);
