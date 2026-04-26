@@ -175,7 +175,7 @@ export default function App() {
   const [form, setForm] = useState<FormData>({ name: "", phone: "", email: "", postcode: "", date: "", time: "" });
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
-  const [, setIsPrivate] = useState(false);
+  const [_isPrivate, setIsPrivate] = useState(false);
   const [showManualOverride, setShowManualOverride] = useState(false);
   const [manualMake, setManualMake] = useState("");
   const [manualModel, setManualModel] = useState("");
@@ -197,8 +197,8 @@ export default function App() {
     let year: number | null = null;
     let model = "";
     if (dvla && dvla.year) {
-      make = (dvla.make || '').toUpperCase().trim();
-      model = (dvla.model || '').toUpperCase().trim();
+      make = (dvla.make || "").toUpperCase().trim();
+      model = (dvla.model || "").toUpperCase().trim();
       year = dvla.year ? parseInt(String(dvla.year), 10) : null;
     } else {
       year = decodeRegYear(clean);
