@@ -86,8 +86,8 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
     return { refrigerant: r[4] === 1 ? "R1234yf" : "R134a", grams: r[5] as number };
   }
 
-  // Tokenize the DVLA model name
-  const dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 2) : [];
+  // Tokenize the DVLA model name (allowing 1-character words so '5' and '3' are detected)
+  const dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 1) : [];
   
   // Calculate Engine Liters (e.g., 1995cc -> "2.0") to match spreadsheet nomenclature
   let engineLiters = "";
