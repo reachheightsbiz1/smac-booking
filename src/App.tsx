@@ -75,7 +75,6 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   const makeUpper = make.toUpperCase().trim();
   const modelUpper = (model || "").toUpperCase().trim();
 
-  // Filter by exact Make and Year Range
   const makeYearMatches = vehicleData.filter((row: any[]) =>
     row[0] === makeUpper && year >= row[2] && year <= row[3]
   );
@@ -86,10 +85,21 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
     return { refrigerant: r[4] === 1 ? "R1234yf" : "R134a", grams: r[5] as number };
   }
 
-  // Tokenize the DVLA model name (allowing 1-character words so '5' and '3' are detected)
-  const dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 1) : [];
+  // 1. Initial DVLA Word Extraction
+  let dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 1) : [];
+  const baseModel = dvlaWords[0] || "";
+
+  // 2. The BMW Series Fix (Translates 320D -> 3 SERIES)
+  if (makeUpper === "BMW" && /^[1-8]\d{2}/.test(baseModel)) {
+      const seriesNum = baseModel.charAt(0);
+      dvlaWords.push(seriesNum, "SERIES");
+  }
+
+  // 3. Marketing Fluff Ignore List (Prevents 3 Series matching X1 xDrive)
+  const ignoreList = ["SPORT", "XDRIVE", "SDRIVE", "M", "SE", "NAV", "BLUEMOTION", "LINE", "AMG", "S-LINE", "TECH", "PLUS", "PREMIUM", "EDITION", "EXECUTIVE", "LUXURY", "DYNAMIC", "ACTIVE", "DESIGN"];
+  dvlaWords = dvlaWords.filter(w => !ignoreList.includes(w));
   
-  // Calculate Engine Liters (e.g., 1995cc -> "2.0") to match spreadsheet nomenclature
+  // 4. Engine Capacity Matching
   let engineLiters = "";
   if (engineCC) {
     engineLiters = (Math.round(engineCC / 100) / 10).toFixed(1); 
@@ -98,21 +108,44 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   
   if (fuelType.toUpperCase() === "DIESEL") dvlaWords.push("D", "DIESEL", "TDI", "CDTI", "CRDI", "DCI", "JTD");
 
+  // 5. The Intelligent Scoring System
   const scored = makeYearMatches.map((row: any[]) => {
     const sheetModel: string = (row[1] || "").toUpperCase();
     let score = 0;
     
-    // Exact engine volume match is heavily weighted
-    if (engineLiters && sheetModel.includes(engineLiters)) {
-        score += 15; 
+    // Huge bonus for matching the Base Model Name (e.g. "GOLF")
+    if (baseModel && sheetModel.includes(baseModel)) {
+        score += 100; 
+        const regex = new RegExp(`\\b${baseModel}\\b`);
+        if (regex.test(sheetModel)) score += 50; // Exact standalone word
     }
 
+    // BMW Series specific bonus
+    if (makeUpper === "BMW" && /^[1-8]\d{2}/.test(baseModel)) {
+        const seriesNum = baseModel.charAt(0);
+        if (sheetModel.includes(`${seriesNum} SERIES`)) score += 150;
+    }
+
+    // Engine volume bonus
+    if (engineLiters && sheetModel.includes(engineLiters)) {
+        score += 20; 
+    }
+
+    // Standard word matching
     for (const word of dvlaWords) {
       if (sheetModel.includes(word)) {
-          // Weight longer words higher to prioritize actual model names over short codes
           score += word.length; 
       }
     }
+
+    // 6. The Hybrid/Electric Penalty (Fixes the E-Golf bug)
+    const isDvlaHybridOrElectric = fuelType.includes("HYBRID") || fuelType.includes("ELECTRIC") || fuelType.includes("PHEV");
+    const isSheetHybridOrElectric = sheetModel.includes("HYBRID") || sheetModel.includes("E-GOLF") || sheetModel.includes("E-UP") || sheetModel.includes(" E-") || sheetModel.includes("PHEV") || sheetModel.includes(" Z.E.") || sheetModel.includes("ELECTRIC");
+    
+    if (!isDvlaHybridOrElectric && isSheetHybridOrElectric) {
+        score -= 200; // Massive penalty for picking an EV/Hybrid for a gas car
+    }
+
     const yearSpan = row[3] - row[2];
     return { row, score, yearSpan };
   });
@@ -127,16 +160,13 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
       const best = topMatches[0].row;
       return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
     }
-    // Tie breaker 1: Refrigerant expected for that year
     const refMatches = topMatches.filter((s: any) => s.row[4] === expectedRef);
     const pool = refMatches.length > 0 ? refMatches : topMatches;
-    // Tie breaker 2: Narrowest production year span
     pool.sort((a: any, b: any) => a.yearSpan - b.yearSpan);
     const best = pool[0].row;
     return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
   }
 
-  // Absolute Fallback if no text matched: Find median grams of the correct gas type for that year
   const refRows = makeYearMatches.filter((r: any[]) => r[4] === expectedRef);
   const pool = refRows.length > 0 ? refRows : makeYearMatches;
   const sorted = [...pool].sort((a: any[], b: any[]) => a[5] - b[5]);
@@ -147,7 +177,7 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
 async function lookupDVLA(reg: string) {
   try {
     const clean = reg.replace(/\s/g, "").toUpperCase();
-    const res = await fetch("/api/dvla", {
+    const res = await fetch("/.netlify/functions/dvla", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ registrationNumber: clean }),
@@ -159,7 +189,7 @@ async function lookupDVLA(reg: string) {
       model: (data.model || "").toUpperCase().trim(),
       year: data.year ? parseInt(String(data.year), 10) : null,
       engineCC: data.engineCC ? parseInt(String(data.engineCC), 10) : null,
-      fuelType: data.fuelType || "",
+      fuelType: (data.fuelType || "").toUpperCase().trim(),
     };
   } catch {
     return null;
@@ -181,21 +211,12 @@ export default function App() {
   const [manualMake, setManualMake] = useState("");
   const [manualModel, setManualModel] = useState("");
 
-  // THIS IS THE NEW X-RAY DIAGNOSTIC USE-EFFECT
   useEffect(() => {
     fetch("/vehicles.json")
       .then(async (r) => {
         const text = await r.text();
-        if (text.trim().startsWith("<")) {
-           alert("ERROR: The system is reading the website instead of the data file. The file is in the wrong folder.");
-           return [];
-        }
-        try {
-           return JSON.parse(text);
-        } catch (e) {
-           alert("ERROR: The JSON data has a syntax error (likely a missing comma or broken bracket from copy-pasting).");
-           return [];
-        }
+        if (text.trim().startsWith("<")) return [];
+        try { return JSON.parse(text); } catch (e) { return []; }
       })
       .then((d) => setVehicleData(d))
       .catch(() => setVehicleData([]));
@@ -291,7 +312,7 @@ export default function App() {
     let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
     let grams = 600;
     if (vehicleData && vehicleData.length > 0) {
-      const match = lookupVehicle(vehicleData, make, model, year, null, ""); // No engine data for manual override
+      const match = lookupVehicle(vehicleData, make, model, year, null, ""); 
       if (match) { refrigerant = match.refrigerant; grams = match.grams; }
       else {
         const fb = YEAR_FALLBACK[year];
