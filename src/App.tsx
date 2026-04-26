@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 
 // Year-based fallback lookup built from Bruce's spreadsheet
 // Format: year -> [refrigerantFlag (0=R134a, 1=R1234yf), mostCommonGrams]
-const YEAR_FALLBACK: Record<number, [number, number]> = {1990: [0, 790], 1991: [0, 700], 1992: [0, 800], 1993: [0, 800], 1994: [0, 800], 1995: [0, 750], 1996: [0, 750], 1997: [0, 750], 1998: [0, 750], 1999: [0, 750], 2000: [0, 750], 2001: [0, 750], 2002: [0, 650], 2003: [0, 650], 2004: [0, 550], 2005: [0, 550], 2006: [0, 550], 2007: [0, 550], 2008: [0, 550], 2009: [0, 500], 2010: [0, 500], 2011: [0, 500], 2012: [0, 500], 2013: [0, 500], 2014: [0, 500], 2015: [0, 500], 2016: [0, 500], 2017: [0, 500], 2018: [0, 500], 2019: [0, 500], 2020: [0, 500], 2021: [0, 500], 2022: [0, 500], 2023: [0, 500], 2024: [0, 500], 2025: [0, 500]};
+const YEAR_FALLBACK: Record<number, [number, number]> = {1990: [0, 790], 1991: [0, 700], 1992: [0, 800], 1993: [0, 800], 1994: [0, 800], 1995: [0, 750], 1996: [0, 750], 1997: [0, 750], 1998: [0, 750], 1999: [0, 750], 2000: [0, 750], 2001: [0, 750], 2002: [0, 650], 2003: [0, 650], 2004: [0, 550], 2005: [0, 550], 2006: [0, 550], 2007: [0, 550], 2008: [0, 550], 2009: [0, 500], 2010: [0, 500], 2011: [0, 500], 2012: [0, 500], 2013: [0, 500], 2014: [0, 500], 2015: [0, 500], 2016: [0, 500], 2017: [1, 500], 2018: [1, 500], 2019: [1, 500], 2020: [1, 500], 2021: [1, 500], 2022: [1, 500], 2023: [1, 500], 2024: [1, 500], 2025: [1, 500]};
 
 interface CarInfo {
   make: string;
@@ -78,30 +78,37 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   );
   if (makeYearMatches.length === 0) return null;
 
-  // If we have a model from DVLA, score by how well it matches spreadsheet model
-  let best: any[] | null = null;
-  if (modelUpper) {
-    const dvlaWords = modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length > 2);
-    const scored = makeYearMatches.map((row: any[]) => {
-      const sheetModel: string = (row[1] || "").toUpperCase();
-      const matchCount = dvlaWords.filter((w: string) => sheetModel.includes(w)).length;
-      return { row, score: matchCount };
-    });
-    scored.sort((a: any, b: any) => b.score - a.score);
-    if (scored[0].score > 0) best = scored[0].row;
+  // Score every row by how many DVLA model words appear in the spreadsheet model name
+  const dvlaWords = modelUpper
+    ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length > 1)
+    : [];
+
+  const scored = makeYearMatches.map((row: any[]) => {
+    const sheetModel: string = (row[1] || "").toUpperCase();
+    const matchCount = dvlaWords.filter((w: string) => sheetModel.includes(w)).length;
+    return { row, score: matchCount };
+  });
+
+  // Sort by score descending — pick the single top match if it has any word overlap
+  scored.sort((a: any, b: any) => b.score - a.score);
+  const topScore = scored[0].score;
+
+  if (topScore > 0) {
+    // Use the single best-matching row (exact grams, no averaging)
+    const best = scored[0].row;
+    return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
   }
 
-  // Fallback: most common refrigerant + average grams for that make/year
-  if (!best) {
-    const r1Count = makeYearMatches.filter((r: any[]) => r[4] === 1).length;
-    const r0Count = makeYearMatches.filter((r: any[]) => r[4] === 0).length;
-    const dominantRef = r1Count >= r0Count ? 1 : 0;
-    const sameRef = makeYearMatches.filter((r: any[]) => r[4] === dominantRef);
-    const avgGrams = Math.round(sameRef.reduce((s: number, r: any[]) => s + r[5], 0) / sameRef.length);
-    return { refrigerant: dominantRef === 1 ? "R1234yf" : "R134a", grams: avgGrams };
-  }
-
-  return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
+  // No model word match — fall back to most common refrigerant for that make/year
+  // Use median grams (not average) to avoid outlier skew
+  const r1Count = makeYearMatches.filter((r: any[]) => r[4] === 1).length;
+  const r0Count = makeYearMatches.filter((r: any[]) => r[4] === 0).length;
+  const dominantRef = r1Count >= r0Count ? 1 : 0;
+  const sameRef = makeYearMatches
+    .filter((r: any[]) => r[4] === dominantRef)
+    .sort((a: any[], b: any[]) => a[5] - b[5]);
+  const medianRow = sameRef[Math.floor(sameRef.length / 2)];
+  return { refrigerant: dominantRef === 1 ? "R1234yf" : "R134a", grams: medianRow[5] as number };
 }
 
 async function lookupDVLA(reg: string) {
