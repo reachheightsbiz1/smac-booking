@@ -62,6 +62,20 @@ function decodeRegYear(reg: string): number | null {
   return null;
 }
 
+// Detect if a plate is a private/personalised plate (not standard UK format)
+// Standard format: AB12 CDE or A123 BCD (prefix) or ABC 123A (suffix)
+function isPrivatePlate(reg: string): boolean {
+  const clean = reg.replace(/\s/g, "").toUpperCase();
+  // Standard current format: 2 letters + 2 digits + 3 letters
+  if (/^[A-Z]{2}\d{2}[A-Z]{3}$/.test(clean)) return false;
+  // Prefix format: 1 letter + 1-3 digits + 1-3 letters
+  if (/^[A-Z]\d{1,3}[A-Z]{1,3}$/.test(clean)) return false;
+  // Suffix format: 3 letters + 1-3 digits + 1 letter
+  if (/^[A-Z]{1,3}\d{1,3}[A-Z]$/.test(clean)) return false;
+  // Anything else is likely a private plate
+  return true;
+}
+
 // vehicles.json format: [make, model, yearFrom, yearTo, refrigerant(0=R134a 1=R1234yf), grams]
 // DVLA returns make e.g. FORD and model e.g. FOCUS
 // Spreadsheet has model e.g. FOCUS III 1.6 TI-VCT so we check if spreadsheet model contains dvla model words
@@ -77,14 +91,13 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   );
   if (makeYearMatches.length === 0) return null;
 
-  // Step 2: If only one result, use it directly — no guessing needed
+  // Step 2: If only one result, use it directly
   if (makeYearMatches.length === 1) {
     const r = makeYearMatches[0];
     return { refrigerant: r[4] === 1 ? "R1234yf" : "R134a", grams: r[5] as number };
   }
 
-  // Step 3: Score each row by model word matching
-  // Only count words with 3+ chars to avoid noise from "4", "I", etc.
+  // Step 3: Score each row by model word matching (words 3+ chars to avoid noise)
   const dvlaWords = modelUpper
     ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 3)
     : [];
@@ -93,37 +106,41 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
     const sheetModel: string = (row[1] || "").toUpperCase();
     let score = 0;
     for (const word of dvlaWords) {
-      if (sheetModel.includes(word)) score += word.length; // longer word match = higher weight
+      if (sheetModel.includes(word)) score += word.length;
     }
-    // Tiebreaker: prefer narrower year range (more specific entry)
     const yearSpan = row[3] - row[2];
     return { row, score, yearSpan };
   });
 
-  // Sort: highest score first, then narrowest year span as tiebreaker
-  scored.sort((a: any, b: any) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return a.yearSpan - b.yearSpan;
-  });
-
+  scored.sort((a: any, b: any) => b.score - a.score);
   const topScore = scored[0].score;
 
-  // Step 4: If we got a meaningful word match, use the best row directly (no averaging)
+  // Step 4: Expected refrigerant based on year (2017+ = R1234yf)
+  const expectedRef = year >= 2017 ? 1 : 0;
+
   if (topScore > 0) {
-    const best = scored[0].row;
+    // Check for a tie at the top score
+    const topMatches = scored.filter((s: any) => s.score === topScore);
+    if (topMatches.length === 1) {
+      // Clear single winner — use it directly
+      const best = topMatches[0].row;
+      return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
+    }
+    // TIE: among tied rows, prefer the ones with the correct gas type for the year
+    const refMatches = topMatches.filter((s: any) => s.row[4] === expectedRef);
+    const pool = refMatches.length > 0 ? refMatches : topMatches;
+    // From the pool, pick narrowest year span (most specific entry)
+    pool.sort((a: any, b: any) => a.yearSpan - b.yearSpan);
+    const best = pool[0].row;
     return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
   }
 
-  // Step 5: No model word matched — fall back to dominant refrigerant by count,
-  // then use median grams (not average) to avoid outlier skew
-  const r1Count = makeYearMatches.filter((r: any[]) => r[4] === 1).length;
-  const r0Count = makeYearMatches.filter((r: any[]) => r[4] === 0).length;
-  const dominantRef = r1Count >= r0Count ? 1 : 0;
-  const sameRef = [...makeYearMatches]
-    .filter((r: any[]) => r[4] === dominantRef)
-    .sort((a: any[], b: any[]) => a[5] - b[5]);
-  const medianRow = sameRef[Math.floor(sameRef.length / 2)];
-  return { refrigerant: dominantRef === 1 ? "R1234yf" : "R134a", grams: medianRow[5] as number };
+  // Step 5: No word matched — use year-based expected refrigerant + median grams from those rows
+  const refRows = makeYearMatches.filter((r: any[]) => r[4] === expectedRef);
+  const pool = refRows.length > 0 ? refRows : makeYearMatches;
+  const sorted = [...pool].sort((a: any[], b: any[]) => a[5] - b[5]);
+  const medianRow = sorted[Math.floor(sorted.length / 2)];
+  return { refrigerant: medianRow[4] === 1 ? "R1234yf" : "R134a", grams: medianRow[5] as number };
 }
 
 async function lookupDVLA(reg: string) {
@@ -138,9 +155,9 @@ async function lookupDVLA(reg: string) {
     if (!res.ok) throw new Error("DVLA error");
     const data = await res.json();
     return {
-      make: data.make || "",
-      model: data.model || "",
-      year: data.year || null,
+      make: (data.make || "").toUpperCase().trim(),
+      model: (data.model || "").toUpperCase().trim(),
+      year: data.year ? parseInt(String(data.year), 10) : null,
       colour: data.colour || "",
     };
   } catch {
@@ -158,6 +175,10 @@ export default function App() {
   const [form, setForm] = useState<FormData>({ name: "", phone: "", email: "", postcode: "", date: "", time: "" });
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [showManualOverride, setShowManualOverride] = useState(false);
+  const [manualMake, setManualMake] = useState("");
+  const [manualModel, setManualModel] = useState("");
 
   useEffect(() => {
     fetch("/vehicles.json")
@@ -176,9 +197,9 @@ export default function App() {
     let year: number | null = null;
     let model = "";
     if (dvla && dvla.year) {
-      make = dvla.make;
-      model = dvla.model;
-      year = dvla.year;
+      make = (dvla.make || "").toUpperCase().trim();
+      model = (dvla.model || "").toUpperCase().trim();
+      year = dvla.year ? parseInt(String(dvla.year), 10) : null;
     } else {
       year = decodeRegYear(clean);
     }
@@ -206,6 +227,7 @@ export default function App() {
       if (fb) { refrigerant = fb[0] === 1 ? "R1234yf" : "R134a"; grams = fb[1]; }
     }
     const price = calcPrice(refrigerant, grams);
+    setIsPrivate(isPrivatePlate(clean));
     setCarInfo({ make: make || "Your Vehicle", model, year, refrigerant, grams, price, dvlaFound: !!dvla });
     setLoading(false);
     setStep(1);
@@ -237,6 +259,26 @@ export default function App() {
       alert("Something went wrong. Please call Bruce on +44 7442 550123");
     }
     setSubmitting(false);
+  };
+
+  const handleManualLookup = () => {
+    if (!manualMake.trim() || !carInfo) return;
+    const make = manualMake.trim().toUpperCase();
+    const model = manualModel.trim().toUpperCase();
+    const year = carInfo.year;
+    let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
+    let grams = 600;
+    if (vehicleData && vehicleData.length > 0) {
+      const match = lookupVehicle(vehicleData, make, model, year);
+      if (match) { refrigerant = match.refrigerant; grams = match.grams; }
+      else {
+        const fb = YEAR_FALLBACK[year];
+        if (fb) { refrigerant = fb[0] === 1 ? "R1234yf" : "R134a"; grams = fb[1]; }
+      }
+    }
+    const price = calcPrice(refrigerant, grams);
+    setCarInfo({ ...carInfo, make, model, refrigerant, grams, price });
+    setShowManualOverride(false);
   };
 
   const isFormValid = form.name && form.phone && form.postcode && form.date && form.time;
@@ -307,9 +349,26 @@ export default function App() {
             <h2 style={{ margin: "0 0 14px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 26, letterSpacing: 2 }}>Your Car Needs</h2>
             <div style={{ display: "inline-block", background: "#f5cb00", color: "#1a1a1a", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 4, padding: "3px 14px", borderRadius: 6, marginBottom: 14 }}>{reg.toUpperCase()}</div>
             {carInfo.make !== "Your Vehicle" && (
-              <div style={{ color: "#9ca3af", fontSize: 14, marginBottom: 14 }}>
-                {carInfo.make} {carInfo.model} · {carInfo.year}
-                {carInfo.dvlaFound && <span style={{ color: "#22c55e", fontSize: 11, marginLeft: 6 }}>✓ DVLA Verified</span>}
+              <div style={{ color: "#9ca3af", fontSize: 14, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+                <span>
+                  {carInfo.make} {carInfo.model} · {carInfo.year}
+                  {carInfo.dvlaFound && <span style={{ color: "#22c55e", fontSize: 11, marginLeft: 6 }}>✓ DVLA Verified</span>}
+                </span>
+                <button className="btn" onClick={() => setShowManualOverride(v => !v)} style={{ fontSize: 11, color: "#f59e0b", background: "transparent", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}>
+                  Wrong car?
+                </button>
+              </div>
+            )}
+            {showManualOverride && (
+              <div style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+                <div style={{ color: "#fbbf24", fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Enter your actual car details</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <input placeholder="Make (e.g. BMW)" value={manualMake} onChange={e => setManualMake(e.target.value)} style={{ flex: 1, padding: "8px 10px", background: "#0a0a0a", border: "1px solid #333", borderRadius: 8, color: "#fff", fontSize: 13 }} />
+                  <input placeholder="Model (e.g. 3 SERIES)" value={manualModel} onChange={e => setManualModel(e.target.value)} style={{ flex: 1, padding: "8px 10px", background: "#0a0a0a", border: "1px solid #333", borderRadius: 8, color: "#fff", fontSize: 13 }} />
+                </div>
+                <button className="btn" onClick={handleManualLookup} disabled={!manualMake.trim()} style={{ width: "100%", padding: "9px", background: manualMake.trim() ? "linear-gradient(135deg,#d97706,#f59e0b)" : "#1f1f1f", borderRadius: 8, color: manualMake.trim() ? "#000" : "#4b5563", fontWeight: 700, fontSize: 13 }}>
+                  Update my car →
+                </button>
               </div>
             )}
             <div style={{ background: carInfo.refrigerant === "R1234yf" ? "linear-gradient(135deg,#1a1a2e,#16213e)" : "linear-gradient(135deg,#1a1a1a,#2d1800)", border: `2px solid ${carInfo.refrigerant === "R1234yf" ? "#3b82f6" : "#f59e0b"}`, borderRadius: 14, padding: "20px", marginBottom: 14 }}>
@@ -403,7 +462,7 @@ export default function App() {
             )}
             <div style={{ display: "flex", gap: 10 }}>
               <a href="tel:+447442550123" style={{ flex: 1, padding: "14px", background: "linear-gradient(135deg,#2563eb,#3b82f6)", borderRadius: 12, color: "#fff", textDecoration: "none", fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>📞 Call Bruce</a>
-              <button className="btn" onClick={() => { setStep(0); setReg(""); setForm({ name:"",phone:"",email:"",postcode:"",date:"",time:"" }); setCarInfo(null); setDone(false); }} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 13, fontWeight: 600 }}>New Booking</button>
+              <button className="btn" onClick={() => { setStep(0); setReg(""); setForm({ name:"",phone:"",email:"",postcode:"",date:"",time:"" }); setCarInfo(null); setDone(false); setIsPrivate(false); setShowManualOverride(false); setManualMake(""); setManualModel(""); }} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 13, fontWeight: 600 }}>New Booking</button>
             </div>
           </div>
         )}
