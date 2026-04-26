@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 
-// Year-based fallback lookup built from Bruce's spreadsheet
-// Format: year -> [refrigerantFlag (0=R134a, 1=R1234yf), mostCommonGrams]
-const YEAR_FALLBACK: Record<number, [number, number]> = {1990: [0, 790], 1991: [0, 700], 1992: [0, 800], 1993: [0, 800], 1994: [0, 800], 1995: [0, 750], 1996: [0, 750], 1997: [0, 750], 1998: [0, 750], 1999: [0, 750], 2000: [0, 750], 2001: [0, 750], 2002: [0, 650], 2003: [0, 650], 2004: [0, 550], 2005: [0, 550], 2006: [0, 550], 2007: [0, 550], 2008: [0, 550], 2009: [0, 500], 2010: [0, 500], 2011: [0, 500], 2012: [0, 500], 2013: [0, 500], 2014: [0, 500], 2015: [0, 500], 2016: [0, 500], 2017: [1, 500], 2018: [1, 500], 2019: [1, 500], 2020: [1, 500], 2021: [1, 500], 2022: [1, 500], 2023: [1, 500], 2024: [1, 500], 2025: [1, 500]};
+const YEAR_FALLBACK: Record<number, [number, number]> = {
+  1990: [0, 790], 1991: [0, 700], 1992: [0, 800], 1993: [0, 800], 1994: [0, 800], 1995: [0, 750], 1996: [0, 750], 1997: [0, 750], 1998: [0, 750], 1999: [0, 750], 2000: [0, 750], 2001: [0, 750], 2002: [0, 650], 2003: [0, 650], 2004: [0, 550], 2005: [0, 550], 2006: [0, 550], 2007: [0, 550], 2008: [0, 550], 2009: [0, 500], 2010: [0, 500], 2011: [0, 500], 2012: [0, 500], 2013: [0, 500], 2014: [0, 500], 2015: [0, 500], 2016: [0, 500], 
+  2017: [1, 500], 2018: [1, 500], 2019: [1, 500], 2020: [1, 500], 2021: [1, 500], 2022: [1, 500], 2023: [1, 500], 2024: [1, 500], 2025: [1, 500]
+};
 
 interface CarInfo {
   make: string;
@@ -24,8 +25,6 @@ interface FormData {
 }
 
 function calcPrice(refrigerant: string, grams: number) {
-  // Pricing: base covers up to 600g. After 600g, charged per 100g bracket.
-  // Rounding: remainder > 50g → round UP to next bracket, ≤ 50g → round DOWN.
   if (refrigerant === "R1234yf") {
     const base = 120;
     let extra = 0;
@@ -62,51 +61,57 @@ function decodeRegYear(reg: string): number | null {
   return null;
 }
 
-// Detect if a plate is a private/personalised plate (not standard UK format)
-// Standard format: AB12 CDE or A123 BCD (prefix) or ABC 123A (suffix)
 function isPrivatePlate(reg: string): boolean {
   const clean = reg.replace(/\s/g, "").toUpperCase();
-  // Standard current format: 2 letters + 2 digits + 3 letters
   if (/^[A-Z]{2}\d{2}[A-Z]{3}$/.test(clean)) return false;
-  // Prefix format: 1 letter + 1-3 digits + 1-3 letters
   if (/^[A-Z]\d{1,3}[A-Z]{1,3}$/.test(clean)) return false;
-  // Suffix format: 3 letters + 1-3 digits + 1 letter
   if (/^[A-Z]{1,3}\d{1,3}[A-Z]$/.test(clean)) return false;
-  // Anything else is likely a private plate
   return true;
 }
 
-// vehicles.json format: [make, model, yearFrom, yearTo, refrigerant(0=R134a 1=R1234yf), grams]
-// DVLA returns make e.g. FORD and model e.g. FOCUS
-// Spreadsheet has model e.g. FOCUS III 1.6 TI-VCT so we check if spreadsheet model contains dvla model words
-function lookupVehicle(vehicleData: any[], make: string, model: string, year: number) {
+function lookupVehicle(vehicleData: any[], make: string, model: string, year: number, engineCC: number | null, fuelType: string) {
   if (!vehicleData || !make || !year) return null;
 
   const makeUpper = make.toUpperCase().trim();
   const modelUpper = (model || "").toUpperCase().trim();
 
-  // Step 1: Filter by exact make + year range
+  // Filter by exact Make and Year Range
   const makeYearMatches = vehicleData.filter((row: any[]) =>
     row[0] === makeUpper && year >= row[2] && year <= row[3]
   );
   if (makeYearMatches.length === 0) return null;
 
-  // Step 2: If only one result, use it directly
   if (makeYearMatches.length === 1) {
     const r = makeYearMatches[0];
     return { refrigerant: r[4] === 1 ? "R1234yf" : "R134a", grams: r[5] as number };
   }
 
-  // Step 3: Score each row by model word matching (words 3+ chars to avoid noise)
-  const dvlaWords = modelUpper
-    ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 3)
-    : [];
+  // Tokenize the DVLA model name
+  const dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 2) : [];
+  
+  // Calculate Engine Liters (e.g., 1995cc -> "2.0") to match spreadsheet nomenclature
+  let engineLiters = "";
+  if (engineCC) {
+    engineLiters = (Math.round(engineCC / 100) / 10).toFixed(1); 
+    dvlaWords.push(engineLiters); 
+  }
+  
+  if (fuelType.toUpperCase() === "DIESEL") dvlaWords.push("D", "DIESEL", "TDI", "CDTI", "CRDI", "DCI", "JTD");
 
   const scored = makeYearMatches.map((row: any[]) => {
     const sheetModel: string = (row[1] || "").toUpperCase();
     let score = 0;
+    
+    // Exact engine volume match is heavily weighted
+    if (engineLiters && sheetModel.includes(engineLiters)) {
+        score += 15; 
+    }
+
     for (const word of dvlaWords) {
-      if (sheetModel.includes(word)) score += word.length;
+      if (sheetModel.includes(word)) {
+          // Weight longer words higher to prioritize actual model names over short codes
+          score += word.length; 
+      }
     }
     const yearSpan = row[3] - row[2];
     return { row, score, yearSpan };
@@ -114,28 +119,24 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
 
   scored.sort((a: any, b: any) => b.score - a.score);
   const topScore = scored[0].score;
-
-  // Step 4: Expected refrigerant based on year (2017+ = R1234yf)
   const expectedRef = year >= 2017 ? 1 : 0;
 
   if (topScore > 0) {
-    // Check for a tie at the top score
     const topMatches = scored.filter((s: any) => s.score === topScore);
     if (topMatches.length === 1) {
-      // Clear single winner — use it directly
       const best = topMatches[0].row;
       return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
     }
-    // TIE: among tied rows, prefer the ones with the correct gas type for the year
+    // Tie breaker 1: Refrigerant expected for that year
     const refMatches = topMatches.filter((s: any) => s.row[4] === expectedRef);
     const pool = refMatches.length > 0 ? refMatches : topMatches;
-    // From the pool, pick narrowest year span (most specific entry)
+    // Tie breaker 2: Narrowest production year span
     pool.sort((a: any, b: any) => a.yearSpan - b.yearSpan);
     const best = pool[0].row;
     return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
   }
 
-  // Step 5: No word matched — use year-based expected refrigerant + median grams from those rows
+  // Absolute Fallback if no text matched: Find median grams of the correct gas type for that year
   const refRows = makeYearMatches.filter((r: any[]) => r[4] === expectedRef);
   const pool = refRows.length > 0 ? refRows : makeYearMatches;
   const sorted = [...pool].sort((a: any[], b: any[]) => a[5] - b[5]);
@@ -146,7 +147,6 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
 async function lookupDVLA(reg: string) {
   try {
     const clean = reg.replace(/\s/g, "").toUpperCase();
-    // Call our Netlify proxy function - avoids CORS block from browser
     const res = await fetch("/api/dvla", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -158,7 +158,8 @@ async function lookupDVLA(reg: string) {
       make: (data.make || "").toUpperCase().trim(),
       model: (data.model || "").toUpperCase().trim(),
       year: data.year ? parseInt(String(data.year), 10) : null,
-      colour: data.colour || "",
+      engineCC: data.engineCC ? parseInt(String(data.engineCC), 10) : null,
+      fuelType: data.fuelType || "",
     };
   } catch {
     return null;
@@ -192,40 +193,47 @@ export default function App() {
     if (clean.length < 2) { setRegError("Please enter a valid UK registration plate."); return; }
     setRegError("");
     setLoading(true);
+    
     const dvla = await lookupDVLA(clean);
     let make = "";
     let year: number | null = null;
     let model = "";
+    let engineCC: number | null = null;
+    let fuelType = "";
+    
     if (dvla && dvla.year) {
-      make = (dvla.make || "").toUpperCase().trim();
-      model = (dvla.model || "").toUpperCase().trim();
-      year = dvla.year ? parseInt(String(dvla.year), 10) : null;
+      make = dvla.make;
+      model = dvla.model;
+      year = dvla.year;
+      engineCC = dvla.engineCC;
+      fuelType = dvla.fuelType;
     } else {
       year = decodeRegYear(clean);
     }
+    
     if (!year) {
       setRegError("Couldn't recognise this registration. Please check and try again.");
       setLoading(false);
       return;
     }
-    // Try exact spreadsheet lookup using make+model+year from DVLA
+
     let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
     let grams = 600;
+    
     if (vehicleData && vehicleData.length > 0 && make) {
-      const match = lookupVehicle(vehicleData, make, model, year);
+      const match = lookupVehicle(vehicleData, make, model, year, engineCC, fuelType);
       if (match) {
         refrigerant = match.refrigerant;
         grams = match.grams;
       } else {
-        // DVLA gave make but no spreadsheet match - use year fallback from spreadsheet
         const fb = YEAR_FALLBACK[year];
         if (fb) { refrigerant = fb[0] === 1 ? "R1234yf" : "R134a"; grams = fb[1]; }
       }
     } else {
-      // No DVLA data at all - use year fallback from spreadsheet
       const fb = YEAR_FALLBACK[year];
       if (fb) { refrigerant = fb[0] === 1 ? "R1234yf" : "R134a"; grams = fb[1]; }
     }
+    
     const price = calcPrice(refrigerant, grams);
     setIsPrivate(isPrivatePlate(clean));
     setCarInfo({ make: make || "Your Vehicle", model, year, refrigerant, grams, price, dvlaFound: !!dvla });
@@ -252,11 +260,12 @@ export default function App() {
       fd.append("refrigerant", carInfo.refrigerant);
       fd.append("grams", carInfo.grams + "g");
       fd.append("total_price", "£" + carInfo.price.total);
+      
       await fetch("/", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: fd.toString() });
       setDone(true);
       setStep(3);
     } catch {
-      alert("Something went wrong. Please call Bruce on +44 7442 550123");
+      alert("Something went wrong. Please call Bruce.");
     }
     setSubmitting(false);
   };
@@ -269,7 +278,7 @@ export default function App() {
     let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
     let grams = 600;
     if (vehicleData && vehicleData.length > 0) {
-      const match = lookupVehicle(vehicleData, make, model, year);
+      const match = lookupVehicle(vehicleData, make, model, year, null, ""); // No engine data for manual override
       if (match) { refrigerant = match.refrigerant; grams = match.grams; }
       else {
         const fb = YEAR_FALLBACK[year];
@@ -296,7 +305,7 @@ export default function App() {
         .plate::placeholder { color:rgba(0,0,0,0.3); }
       `}</style>
 
-      {/* Logo */}
+      {/* Logo Area */}
       <div style={{ textAlign: "center", marginBottom: 24, animation: "fadeUp 0.4s ease" }}>
         <div style={{ width: 68, height: 68, borderRadius: "50%", background: "#1a1a1a", border: "2px solid #2a2a2a", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
           <div style={{ color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 19, letterSpacing: 3, lineHeight: 1 }}>SMAC</div>
@@ -308,19 +317,7 @@ export default function App() {
         <div style={{ color: "#6b7280", fontSize: 13, marginTop: 3 }}>Car AC Regas · We Come To You</div>
       </div>
 
-      {/* Progress */}
-      <div style={{ display: "flex", gap: 6, width: "100%", maxWidth: 420, marginBottom: 24 }}>
-        {["Reg Plate","Your Price","Book","Done"].map((label, i) => (
-          <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-            <div style={{ height: 4, width: "100%", borderRadius: 99, background: i < step ? "#22c55e" : i === step ? "#3b82f6" : "#1f1f1f", transition: "background 0.3s" }} />
-            <div style={{ color: i <= step ? "#9ca3af" : "#2d2d2d", fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Card */}
       <div style={{ width: "100%", maxWidth: 420, background: "#111", border: "1px solid #1f1f1f", borderRadius: 20, padding: "26px 22px", animation: "fadeUp 0.4s ease" }}>
-
         {/* STEP 0 */}
         {step === 0 && (
           <div>
@@ -335,9 +332,8 @@ export default function App() {
               <input className="plate" value={reg} onChange={e => { setReg(e.target.value.toUpperCase()); setRegError(""); }} onKeyDown={e => e.key === "Enter" && handleRegLookup()} placeholder="AB17 CDE" maxLength={8} style={{ background: "transparent", border: "none", color: "#1a1a1a", fontSize: 30, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 6, flex: 1, width: "100%" }} />
             </div>
             {regError && <div style={{ color: "#ef4444", fontSize: 13, padding: "8px 12px", background: "rgba(239,68,68,0.08)", borderRadius: 8, marginBottom: 12 }}>{regError}</div>}
-            <div style={{ color: "#374151", fontSize: 12, marginBottom: 20, lineHeight: 1.6 }}>💡 Don't know your reg? Check your V5C logbook or dashboard sticker.</div>
             <button className="btn" onClick={handleRegLookup} disabled={loading} style={{ width: "100%", padding: "16px", background: loading ? "#1f1f1f" : "linear-gradient(135deg,#2563eb,#3b82f6)", borderRadius: 12, color: loading ? "#4b5563" : "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 3, display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
-              {loading ? <><div style={{ width: 18, height: 18, border: "2px solid #4b5563", borderTopColor: "#9ca3af", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />Looking up your car...</> : "Check My Car →"}
+              {loading ? <><div style={{ width: 18, height: 18, border: "2px solid #4b5563", borderTopColor: "#9ca3af", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />Looking up...</> : "Check My Car →"}
             </button>
           </div>
         )}
@@ -350,25 +346,17 @@ export default function App() {
             <div style={{ display: "inline-block", background: "#f5cb00", color: "#1a1a1a", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 4, padding: "3px 14px", borderRadius: 6, marginBottom: 14 }}>{reg.toUpperCase()}</div>
             {carInfo.make !== "Your Vehicle" && (
               <div style={{ color: "#9ca3af", fontSize: 14, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
-                <span>
-                  {carInfo.make} {carInfo.model} · {carInfo.year}
-                  {carInfo.dvlaFound && <span style={{ color: "#22c55e", fontSize: 11, marginLeft: 6 }}>✓ DVLA Verified</span>}
-                </span>
-                <button className="btn" onClick={() => setShowManualOverride(v => !v)} style={{ fontSize: 11, color: "#f59e0b", background: "transparent", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}>
-                  Wrong car?
-                </button>
+                <span>{carInfo.make} {carInfo.model} · {carInfo.year} {carInfo.dvlaFound && <span style={{ color: "#22c55e", fontSize: 11, marginLeft: 6 }}>✓ Verified</span>}</span>
+                <button className="btn" onClick={() => setShowManualOverride(v => !v)} style={{ fontSize: 11, color: "#f59e0b", background: "transparent", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}>Wrong car?</button>
               </div>
             )}
             {showManualOverride && (
               <div style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
-                <div style={{ color: "#fbbf24", fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Enter your actual car details</div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                   <input placeholder="Make (e.g. BMW)" value={manualMake} onChange={e => setManualMake(e.target.value)} style={{ flex: 1, padding: "8px 10px", background: "#0a0a0a", border: "1px solid #333", borderRadius: 8, color: "#fff", fontSize: 13 }} />
-                  <input placeholder="Model (e.g. 3 SERIES)" value={manualModel} onChange={e => setManualModel(e.target.value)} style={{ flex: 1, padding: "8px 10px", background: "#0a0a0a", border: "1px solid #333", borderRadius: 8, color: "#fff", fontSize: 13 }} />
+                  <input placeholder="Model" value={manualModel} onChange={e => setManualModel(e.target.value)} style={{ flex: 1, padding: "8px 10px", background: "#0a0a0a", border: "1px solid #333", borderRadius: 8, color: "#fff", fontSize: 13 }} />
                 </div>
-                <button className="btn" onClick={handleManualLookup} disabled={!manualMake.trim()} style={{ width: "100%", padding: "9px", background: manualMake.trim() ? "linear-gradient(135deg,#d97706,#f59e0b)" : "#1f1f1f", borderRadius: 8, color: manualMake.trim() ? "#000" : "#4b5563", fontWeight: 700, fontSize: 13 }}>
-                  Update my car →
-                </button>
+                <button className="btn" onClick={handleManualLookup} disabled={!manualMake.trim()} style={{ width: "100%", padding: "9px", background: manualMake.trim() ? "linear-gradient(135deg,#d97706,#f59e0b)" : "#1f1f1f", borderRadius: 8, color: manualMake.trim() ? "#000" : "#4b5563", fontWeight: 700, fontSize: 13 }}>Update my car →</button>
               </div>
             )}
             <div style={{ background: carInfo.refrigerant === "R1234yf" ? "linear-gradient(135deg,#1a1a2e,#16213e)" : "linear-gradient(135deg,#1a1a1a,#2d1800)", border: `2px solid ${carInfo.refrigerant === "R1234yf" ? "#3b82f6" : "#f59e0b"}`, borderRadius: 14, padding: "20px", marginBottom: 14 }}>
@@ -392,11 +380,6 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
-              {["Full regas + leak check included","Mobile — we come to your location","Stockport & surrounding areas","Same-week appointments available"].map((t, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, color: "#d1d5db", fontSize: 13, padding: "3px 0" }}><span style={{ color: "#22c55e" }}>✓</span> {t}</div>
-              ))}
-            </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button className="btn" onClick={() => setStep(0)} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 14, fontWeight: 600 }}>← Back</button>
               <button className="btn" onClick={() => setStep(2)} style={{ flex: 2, padding: "14px", background: "linear-gradient(135deg,#16a34a,#22c55e)", borderRadius: 12, color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 3 }}>Book Now →</button>
@@ -409,11 +392,10 @@ export default function App() {
           <div>
             <div style={{ color: "#6b7280", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, fontWeight: 700, marginBottom: 4 }}>Step 3 — Your Details</div>
             <h2 style={{ margin: "0 0 6px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 26, letterSpacing: 2 }}>Book Your Slot</h2>
-            <p style={{ color: "#6b7280", fontSize: 13, margin: "0 0 18px" }}>We come to you. No garage needed.</p>
             {([["Full Name *","name","text","John Smith"],["Phone Number *","phone","tel","+44 7700 000000"],["Email (optional)","email","email","john@email.com"],["Postcode *","postcode","text","SK1 1AA"]] as [string,keyof FormData,string,string][]).map(([label, name, type, placeholder]) => (
               <div key={name} style={{ marginBottom: 12 }}>
                 <label style={{ display: "block", color: "#9ca3af", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 5 }}>{label}</label>
-                <input name={name} type={type} placeholder={placeholder} value={form[name]} onChange={e => setForm({ ...form, [name]: e.target.value })} style={{ width: "100%", padding: "12px 14px", background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 15, transition: "border-color 0.2s" }} />
+                <input name={name} type={type} placeholder={placeholder} value={form[name]} onChange={e => setForm({ ...form, [name]: e.target.value })} style={{ width: "100%", padding: "12px 14px", background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 10, color: "#fff", fontSize: 15 }} />
               </div>
             ))}
             <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
@@ -424,17 +406,6 @@ export default function App() {
                 </div>
               ))}
             </div>
-            {carInfo && (
-              <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
-                <div style={{ color: "#6b7280", fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>Booking Summary</div>
-                {[["Reg", reg.toUpperCase()],["Service", carInfo.refrigerant + " Regas"],["Quantity", carInfo.grams + "g"],["Price", "£" + carInfo.price.total]].map(([k, v]) => (
-                  <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 13 }}>
-                    <span style={{ color: "#6b7280" }}>{k}</span>
-                    <span style={{ color: "#e5e7eb", fontWeight: 600 }}>{v}</span>
-                  </div>
-                ))}
-              </div>
-            )}
             <div style={{ display: "flex", gap: 10 }}>
               <button className="btn" onClick={() => setStep(1)} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 14, fontWeight: 600 }}>← Back</button>
               <button className="btn" onClick={handleSubmit} disabled={!isFormValid || submitting} style={{ flex: 2, padding: "14px", background: isFormValid ? "linear-gradient(135deg,#2563eb,#3b82f6)" : "#1f1f1f", borderRadius: 12, color: isFormValid ? "#fff" : "#4b5563", fontFamily: "'Bebas Neue',sans-serif", fontSize: 20, letterSpacing: 3, cursor: isFormValid ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
@@ -449,26 +420,13 @@ export default function App() {
           <div style={{ textAlign: "center", animation: "fadeUp 0.4s ease" }}>
             <div style={{ width: 68, height: 68, borderRadius: "50%", background: "linear-gradient(135deg,#16a34a,#22c55e)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, margin: "0 auto 16px" }}>✓</div>
             <h2 style={{ margin: "0 0 8px", fontFamily: "'Bebas Neue',sans-serif", fontSize: 28, letterSpacing: 2 }}>Booking Received!</h2>
-            <p style={{ color: "#6b7280", fontSize: 14, marginBottom: 22, lineHeight: 1.7 }}>Bruce will confirm your slot shortly. He'll come to your location — no need to visit a garage.</p>
-            {carInfo && (
-              <div style={{ background: "#0a0a0a", border: "1px solid #1f1f1f", borderRadius: 12, padding: "14px 16px", marginBottom: 20, textAlign: "left" }}>
-                {[["Name",form.name],["Phone",form.phone],["Postcode",form.postcode],["Date",form.date],["Time",form.time],["Reg",reg.toUpperCase()],["Service",carInfo.refrigerant+" Regas"],["Grams",carInfo.grams+"g"],["Total","£"+carInfo.price.total]].filter(([,v])=>v).map(([k,v])=>(
-                  <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1a1a1a", fontSize: 13 }}>
-                    <span style={{ color: "#6b7280" }}>{k}</span>
-                    <span style={{ color: "#e5e7eb", fontWeight: 600 }}>{v}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10 }}>
-              <a href="tel:+447442550123" style={{ flex: 1, padding: "14px", background: "linear-gradient(135deg,#2563eb,#3b82f6)", borderRadius: 12, color: "#fff", textDecoration: "none", fontFamily: "'Bebas Neue',sans-serif", fontSize: 18, letterSpacing: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>📞 Call Bruce</a>
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
               <button className="btn" onClick={() => { setStep(0); setReg(""); setForm({ name:"",phone:"",email:"",postcode:"",date:"",time:"" }); setCarInfo(null); setDone(false); setIsPrivate(false); setShowManualOverride(false); setManualMake(""); setManualModel(""); }} style={{ flex: 1, padding: "14px", background: "transparent", border: "1px solid #333", borderRadius: 12, color: "#9ca3af", fontSize: 13, fontWeight: 600 }}>New Booking</button>
             </div>
           </div>
         )}
       </div>
 
-      {/* Hidden Netlify form */}
       <form name="smac-bookings" data-netlify="true" hidden>
         <input type="text" name="name" />
         <input type="text" name="phone" />
@@ -484,11 +442,6 @@ export default function App() {
         <input type="text" name="grams" />
         <input type="text" name="total_price" />
       </form>
-
-      <div style={{ marginTop: 22, color: "#2d2d2d", fontSize: 11, textAlign: "center", lineHeight: 1.9 }}>
-        <div>bruce@stockportmobileaircon.co.uk</div>
-        <div>+44 7442 550123 · Stockport & surrounding areas</div>
-      </div>
     </div>
   );
 }
