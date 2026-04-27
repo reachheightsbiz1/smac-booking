@@ -29,17 +29,21 @@ exports.handler = async function (event) {
     }
 
     const v = data.VehicleDetails;
+    
+    // COMBINE ALL MODEL DATA: This ensures we capture "SPORT", "ALLROAD", "ESTATE", etc.
+    const modelBase = v.Model || v.ModelDvsa || "";
+    const variant = v.Derivative || v.Variant || v.ModelDescription || "";
+    const combinedModel = `${modelBase} ${variant}`.trim();
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         make: v.Make || "",
-        model: v.Model || v.ModelDvsa || "",
+        model: combinedModel,
         year: v.Year ? parseInt(v.Year, 10) : null,
-        colour: v.Colour || "",
+        engineCC: v.CylinderCapacity || v.EngineCapacity || null,
         fuelType: v.Fuel || "",
-        engineCC: v.CylinderCapacity || v.EngineCapacity || null
       }),
     };
   } catch (err) {

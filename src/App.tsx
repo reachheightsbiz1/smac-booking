@@ -74,6 +74,8 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
 
   const makeUpper = make.toUpperCase().trim();
   const modelUpper = (model || "").toUpperCase().trim();
+  const fuelUpper = (fuelType || "").toUpperCase().trim();
+  const dvlaString = `${modelUpper} ${fuelUpper}`;
 
   const makeYearMatches = vehicleData.filter((row: any[]) =>
     row[0] === makeUpper && year >= row[2] && year <= row[3]
@@ -85,66 +87,64 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
     return { refrigerant: r[4] === 1 ? "R1234yf" : "R134a", grams: r[5] as number };
   }
 
-  // 1. Initial DVLA Word Extraction
-  let dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 1) : [];
+  const dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 1) : [];
   const baseModel = dvlaWords[0] || "";
 
-  // 2. The BMW Series Fix (Translates 320D -> 3 SERIES)
+  // Normalize BMW logic
   if (makeUpper === "BMW" && /^[1-8]\d{2}/.test(baseModel)) {
       const seriesNum = baseModel.charAt(0);
       dvlaWords.push(seriesNum, "SERIES");
   }
 
-  // 3. Marketing Fluff Ignore List (Prevents 3 Series matching X1 xDrive)
-  const ignoreList = ["SPORT", "XDRIVE", "SDRIVE", "M", "SE", "NAV", "BLUEMOTION", "LINE", "AMG", "S-LINE", "TECH", "PLUS", "PREMIUM", "EDITION", "EXECUTIVE", "LUXURY", "DYNAMIC", "ACTIVE", "DESIGN"];
-  dvlaWords = dvlaWords.filter(w => !ignoreList.includes(w));
-  
-  // 4. Engine Capacity Matching
   let engineLiters = "";
   if (engineCC) {
     engineLiters = (Math.round(engineCC / 100) / 10).toFixed(1); 
-    dvlaWords.push(engineLiters); 
   }
   
-  if (fuelType.toUpperCase() === "DIESEL") dvlaWords.push("D", "DIESEL", "TDI", "CDTI", "CRDI", "DCI", "JTD");
+  if (fuelUpper === "DIESEL") dvlaWords.push("D", "DIESEL", "TDI", "CDTI", "CRDI", "DCI", "JTD");
 
-  // 5. The Intelligent Scoring System
+  // THE UNIVERSAL PENALTY LIST
+  const criticalModifiers = ["SPORT", "CABRIO", "COUP", "ESTATE", "ALLROAD", "TOURER", "HYBRID", "ELECTRIC", "PHEV", "E-GOLF", "E-UP", "E-TRON", "Z.E."];
+
   const scored = makeYearMatches.map((row: any[]) => {
     const sheetModel: string = (row[1] || "").toUpperCase();
     let score = 0;
-    
-    // Huge bonus for matching the Base Model Name (e.g. "GOLF")
-    if (baseModel && sheetModel.includes(baseModel)) {
-        score += 100; 
-        const regex = new RegExp(`\\b${baseModel}\\b`);
-        if (regex.test(sheetModel)) score += 50; // Exact standalone word
-    }
 
-    // BMW Series specific bonus
-    if (makeUpper === "BMW" && /^[1-8]\d{2}/.test(baseModel)) {
-        const seriesNum = baseModel.charAt(0);
-        if (sheetModel.includes(`${seriesNum} SERIES`)) score += 150;
-    }
-
-    // Engine volume bonus
-    if (engineLiters && sheetModel.includes(engineLiters)) {
-        score += 20; 
-    }
-
-    // Standard word matching
+    // 1. Positive Scoring: Word Matches
     for (const word of dvlaWords) {
       if (sheetModel.includes(word)) {
-          score += word.length; 
+          score += word.length * 10; 
       }
     }
 
-    // 6. The Hybrid/Electric Penalty (Fixes the E-Golf bug)
-    const isDvlaHybridOrElectric = fuelType.includes("HYBRID") || fuelType.includes("ELECTRIC") || fuelType.includes("PHEV");
-    const isSheetHybridOrElectric = sheetModel.includes("HYBRID") || sheetModel.includes("E-GOLF") || sheetModel.includes("E-UP") || sheetModel.includes(" E-") || sheetModel.includes("PHEV") || sheetModel.includes(" Z.E.") || sheetModel.includes("ELECTRIC");
-    
-    if (!isDvlaHybridOrElectric && isSheetHybridOrElectric) {
-        score -= 200; // Massive penalty for picking an EV/Hybrid for a gas car
+    // 2. Positive Scoring: Exact Engine Liters
+    if (engineLiters && sheetModel.includes(engineLiters)) {
+        score += 150; 
     }
+
+    // 3. Positive Scoring: Base Model Identity
+    if (baseModel && new RegExp(`\\b${baseModel}\\b`).test(sheetModel)) {
+        score += 100;
+    }
+
+    // 4. NEGATIVE SCORING: Strict Modifier Penalty (The Bulletproof Rule)
+    for (const mod of criticalModifiers) {
+        const dvlaHasMod = dvlaString.includes(mod);
+        const sheetHasMod = sheetModel.includes(mod);
+
+        // If the NRF sheet demands "SPORT", but the DVLA string doesn't have it = Massive Penalty
+        if (sheetHasMod && !dvlaHasMod) score -= 1000;
+        
+        // If the DVLA string demands "SPORT", but the NRF sheet doesn't have it = Massive Penalty
+        if (!sheetHasMod && dvlaHasMod) score -= 1000;
+    }
+
+    // 5. NEGATIVE SCORING: EV/Hybrid Safety Net
+    const isDvlaEV = dvlaString.includes("HYBRID") || dvlaString.includes("ELECTRIC") || dvlaString.includes("PHEV");
+    const isSheetEV = sheetModel.includes("HYBRID") || sheetModel.includes("ELECTRIC") || sheetModel.includes("PHEV") || sheetModel.includes("E-GOLF") || sheetModel.includes("E-UP");
+    
+    if (isSheetEV && !isDvlaEV) score -= 1000;
+    if (!isSheetEV && isDvlaEV) score -= 1000;
 
     const yearSpan = row[3] - row[2];
     return { row, score, yearSpan };
@@ -154,7 +154,7 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   const topScore = scored[0].score;
   const expectedRef = year >= 2017 ? 1 : 0;
 
-  if (topScore > 0) {
+  if (topScore > -500) {
     const topMatches = scored.filter((s: any) => s.score === topScore);
     if (topMatches.length === 1) {
       const best = topMatches[0].row;
