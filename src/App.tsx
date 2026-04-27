@@ -69,12 +69,54 @@ function isPrivatePlate(reg: string): boolean {
   return true;
 }
 
-function lookupVehicle(vehicleData: any[], make: string, model: string, year: number, engineCC: number | null, fuelType: string) {
+// THE TRANSLATION DICTIONARY
+function normalizeModelName(make: string, modelStr: string): string {
+  let normalized = modelStr;
+
+  // 1. Mercedes-Benz Fix (Translates C220 -> C-CLASS)
+  if (make === "MERCEDES-BENZ") {
+    if (/^[ACEGMS]\s?\d{3}/.test(normalized)) {
+      const letter = normalized.charAt(0);
+      normalized += ` ${letter}-CLASS`;
+    }
+  }
+
+  // 2. BMW Fix (Translates 320d -> 3 SERIES)
+  if (make === "BMW") {
+    const match = normalized.match(/^([1-8])\d{2}/);
+    if (match) {
+      normalized += ` ${match[1]} SERIES`;
+    }
+  }
+
+  // 3. Static Alias Dictionary for Commercial & Rebadged Vehicles
+  const aliases: Record<string, string> = {
+    "SHOGUN": "PAJERO",
+    "DISPATCH": "JUMPY",
+    "RELAY": "JUMPER",
+    "TRANSPORTER T28": "TRANSPORTER",
+    "TRANSPORTER T30": "TRANSPORTER",
+    "TRANSPORTER T32": "TRANSPORTER",
+    "VITO": "V-CLASS"
+  };
+
+  for (const [dvlaName, nrfName] of Object.entries(aliases)) {
+    if (normalized.includes(dvlaName)) {
+      normalized += ` ${nrfName}`;
+    }
+  }
+
+  return normalized;
+}
+
+function lookupVehicle(vehicleData: any[], make: string, rawModel: string, year: number, engineCC: number | null, fuelType: string) {
   if (!vehicleData || !make || !year) return null;
 
   const makeUpper = make.toUpperCase().trim();
-  const modelUpper = (model || "").toUpperCase().trim();
   const fuelUpper = (fuelType || "").toUpperCase().trim();
+  
+  // Pass the raw DVLA model through our Translation Dictionary
+  const modelUpper = normalizeModelName(makeUpper, (rawModel || "").toUpperCase().trim());
   const dvlaString = `${modelUpper} ${fuelUpper}`;
 
   const makeYearMatches = vehicleData.filter((row: any[]) =>
@@ -90,12 +132,6 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   const dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 1) : [];
   const baseModel = dvlaWords[0] || "";
 
-  // Normalize BMW logic
-  if (makeUpper === "BMW" && /^[1-8]\d{2}/.test(baseModel)) {
-      const seriesNum = baseModel.charAt(0);
-      dvlaWords.push(seriesNum, "SERIES");
-  }
-
   let engineLiters = "";
   if (engineCC) {
     engineLiters = (Math.round(engineCC / 100) / 10).toFixed(1); 
@@ -103,7 +139,7 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
   
   if (fuelUpper === "DIESEL") dvlaWords.push("D", "DIESEL", "TDI", "CDTI", "CRDI", "DCI", "JTD");
 
-  // THE UNIVERSAL PENALTY LIST
+  // UNIVERSAL PENALTY LIST
   const criticalModifiers = ["SPORT", "CABRIO", "COUP", "ESTATE", "ALLROAD", "TOURER", "HYBRID", "ELECTRIC", "PHEV", "E-GOLF", "E-UP", "E-TRON", "Z.E."];
 
   const scored = makeYearMatches.map((row: any[]) => {
@@ -127,15 +163,12 @@ function lookupVehicle(vehicleData: any[], make: string, model: string, year: nu
         score += 100;
     }
 
-    // 4. NEGATIVE SCORING: Strict Modifier Penalty (The Bulletproof Rule)
+    // 4. NEGATIVE SCORING: Strict Modifier Penalty
     for (const mod of criticalModifiers) {
         const dvlaHasMod = dvlaString.includes(mod);
         const sheetHasMod = sheetModel.includes(mod);
 
-        // If the NRF sheet demands "SPORT", but the DVLA string doesn't have it = Massive Penalty
         if (sheetHasMod && !dvlaHasMod) score -= 1000;
-        
-        // If the DVLA string demands "SPORT", but the NRF sheet doesn't have it = Massive Penalty
         if (!sheetHasMod && dvlaHasMod) score -= 1000;
     }
 
