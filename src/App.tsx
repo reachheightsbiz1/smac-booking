@@ -6,46 +6,25 @@ const YEAR_FALLBACK: Record<number, [number, number]> = {
 };
 
 interface CarInfo {
-  make: string;
-  model: string;
-  year: number;
-  refrigerant: string;
-  grams: number;
-  price: { base: number; extra: number; total: number };
-  dvlaFound: boolean;
+  make: string; model: string; year: number; refrigerant: string; grams: number;
+  price: { base: number; extra: number; total: number }; dvlaFound: boolean;
 }
 
 interface FormData {
-  name: string;
-  phone: string;
-  email: string;
-  postcode: string;
-  date: string;
-  time: string;
+  name: string; phone: string; email: string; postcode: string; date: string; time: string;
 }
 
 function calcPrice(refrigerant: string, grams: number) {
-  if (refrigerant === "R1234yf") {
-    const base = 120;
-    let extra = 0;
-    if (grams > 600) {
-      const over = grams - 600;
-      const remainder = over % 100;
-      const brackets = remainder > 50 ? Math.ceil(over / 100) : Math.floor(over / 100);
-      extra = brackets * 20;
-    }
-    return { base, extra, total: base + extra };
-  } else {
-    const base = 80;
-    let extra = 0;
-    if (grams > 600) {
-      const over = grams - 600;
-      const remainder = over % 100;
-      const brackets = remainder > 50 ? Math.ceil(over / 100) : Math.floor(over / 100);
-      extra = brackets * 10;
-    }
-    return { base, extra, total: base + extra };
+  const base = refrigerant === "R1234yf" ? 120 : 80;
+  const extraPerBracket = refrigerant === "R1234yf" ? 20 : 10;
+  let extra = 0;
+  if (grams > 600) {
+    const over = grams - 600;
+    const remainder = over % 100;
+    const brackets = remainder > 50 ? Math.ceil(over / 100) : Math.floor(over / 100);
+    extra = brackets * extraPerBracket;
   }
+  return { base, extra, total: base + extra };
 }
 
 function decodeRegYear(reg: string): number | null {
@@ -69,43 +48,26 @@ function isPrivatePlate(reg: string): boolean {
   return true;
 }
 
-// THE TRANSLATION DICTIONARY
 function normalizeModelName(make: string, modelStr: string): string {
   let normalized = modelStr;
-
-  // 1. Mercedes-Benz Fix (Translates C220 -> C-CLASS)
   if (make === "MERCEDES-BENZ") {
     if (/^[ACEGMS]\s?\d{3}/.test(normalized)) {
       const letter = normalized.charAt(0);
       normalized += ` ${letter}-CLASS`;
     }
   }
-
-  // 2. BMW Fix (Translates 320d -> 3 SERIES)
   if (make === "BMW") {
     const match = normalized.match(/^([1-8])\d{2}/);
-    if (match) {
-      normalized += ` ${match[1]} SERIES`;
-    }
+    if (match) normalized += ` ${match[1]} SERIES`;
   }
-
-  // 3. Static Alias Dictionary for Commercial & Rebadged Vehicles
   const aliases: Record<string, string> = {
-    "SHOGUN": "PAJERO",
-    "DISPATCH": "JUMPY",
-    "RELAY": "JUMPER",
-    "TRANSPORTER T28": "TRANSPORTER",
-    "TRANSPORTER T30": "TRANSPORTER",
-    "TRANSPORTER T32": "TRANSPORTER",
-    "VITO": "V-CLASS"
+    "SHOGUN": "PAJERO", "DISPATCH": "JUMPY", "RELAY": "JUMPER",
+    "TRANSPORTER T28": "TRANSPORTER", "TRANSPORTER T30": "TRANSPORTER",
+    "TRANSPORTER T32": "TRANSPORTER", "VITO": "V-CLASS"
   };
-
   for (const [dvlaName, nrfName] of Object.entries(aliases)) {
-    if (normalized.includes(dvlaName)) {
-      normalized += ` ${nrfName}`;
-    }
+    if (normalized.includes(dvlaName)) normalized += ` ${nrfName}`;
   }
-
   return normalized;
 }
 
@@ -114,73 +76,45 @@ function lookupVehicle(vehicleData: any[], make: string, rawModel: string, year:
 
   const makeUpper = make.toUpperCase().trim();
   const fuelUpper = (fuelType || "").toUpperCase().trim();
-  
-  // Pass the raw DVLA model through our Translation Dictionary
   const modelUpper = normalizeModelName(makeUpper, (rawModel || "").toUpperCase().trim());
   const dvlaString = `${modelUpper} ${fuelUpper}`;
 
-  const makeYearMatches = vehicleData.filter((row: any[]) =>
-    row[0] === makeUpper && year >= row[2] && year <= row[3]
-  );
+  const makeYearMatches = vehicleData.filter((row: any[]) => row[0] === makeUpper && year >= row[2] && year <= row[3]);
   if (makeYearMatches.length === 0) return null;
-
-  if (makeYearMatches.length === 1) {
-    const r = makeYearMatches[0];
-    return { refrigerant: r[4] === 1 ? "R1234yf" : "R134a", grams: r[5] as number };
-  }
+  if (makeYearMatches.length === 1) return { refrigerant: makeYearMatches[0][4] === 1 ? "R1234yf" : "R134a", grams: makeYearMatches[0][5] as number };
 
   const dvlaWords = modelUpper ? modelUpper.split(/[\s\-\/]+/).filter((w: string) => w.length >= 1) : [];
   const baseModel = dvlaWords[0] || "";
 
   let engineLiters = "";
-  if (engineCC) {
-    engineLiters = (Math.round(engineCC / 100) / 10).toFixed(1); 
-  }
-  
+  if (engineCC) engineLiters = (Math.round(engineCC / 100) / 10).toFixed(1); 
   if (fuelUpper === "DIESEL") dvlaWords.push("D", "DIESEL", "TDI", "CDTI", "CRDI", "DCI", "JTD");
 
-  // UNIVERSAL PENALTY LIST
   const criticalModifiers = ["SPORT", "CABRIO", "COUP", "ESTATE", "ALLROAD", "TOURER", "HYBRID", "ELECTRIC", "PHEV", "E-GOLF", "E-UP", "E-TRON", "Z.E."];
 
   const scored = makeYearMatches.map((row: any[]) => {
     const sheetModel: string = (row[1] || "").toUpperCase();
     let score = 0;
 
-    // 1. Positive Scoring: Word Matches
     for (const word of dvlaWords) {
-      if (sheetModel.includes(word)) {
-          score += word.length * 10; 
-      }
+      if (sheetModel.includes(word)) score += word.length * 10; 
     }
+    if (engineLiters && sheetModel.includes(engineLiters)) score += 150; 
+    if (baseModel && new RegExp(`\\b${baseModel}\\b`).test(sheetModel)) score += 100;
 
-    // 2. Positive Scoring: Exact Engine Liters
-    if (engineLiters && sheetModel.includes(engineLiters)) {
-        score += 150; 
-    }
-
-    // 3. Positive Scoring: Base Model Identity
-    if (baseModel && new RegExp(`\\b${baseModel}\\b`).test(sheetModel)) {
-        score += 100;
-    }
-
-    // 4. NEGATIVE SCORING: Strict Modifier Penalty
     for (const mod of criticalModifiers) {
         const dvlaHasMod = dvlaString.includes(mod);
         const sheetHasMod = sheetModel.includes(mod);
-
         if (sheetHasMod && !dvlaHasMod) score -= 1000;
         if (!sheetHasMod && dvlaHasMod) score -= 1000;
     }
 
-    // 5. NEGATIVE SCORING: EV/Hybrid Safety Net
     const isDvlaEV = dvlaString.includes("HYBRID") || dvlaString.includes("ELECTRIC") || dvlaString.includes("PHEV");
     const isSheetEV = sheetModel.includes("HYBRID") || sheetModel.includes("ELECTRIC") || sheetModel.includes("PHEV") || sheetModel.includes("E-GOLF") || sheetModel.includes("E-UP");
-    
     if (isSheetEV && !isDvlaEV) score -= 1000;
     if (!isSheetEV && isDvlaEV) score -= 1000;
 
-    const yearSpan = row[3] - row[2];
-    return { row, score, yearSpan };
+    return { row, score, yearSpan: row[3] - row[2] };
   });
 
   scored.sort((a: any, b: any) => b.score - a.score);
@@ -189,31 +123,24 @@ function lookupVehicle(vehicleData: any[], make: string, rawModel: string, year:
 
   if (topScore > -500) {
     const topMatches = scored.filter((s: any) => s.score === topScore);
-    if (topMatches.length === 1) {
-      const best = topMatches[0].row;
-      return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
-    }
+    if (topMatches.length === 1) return { refrigerant: topMatches[0].row[4] === 1 ? "R1234yf" : "R134a", grams: topMatches[0].row[5] as number };
     const refMatches = topMatches.filter((s: any) => s.row[4] === expectedRef);
     const pool = refMatches.length > 0 ? refMatches : topMatches;
     pool.sort((a: any, b: any) => a.yearSpan - b.yearSpan);
-    const best = pool[0].row;
-    return { refrigerant: best[4] === 1 ? "R1234yf" : "R134a", grams: best[5] as number };
+    return { refrigerant: pool[0].row[4] === 1 ? "R1234yf" : "R134a", grams: pool[0].row[5] as number };
   }
 
   const refRows = makeYearMatches.filter((r: any[]) => r[4] === expectedRef);
   const pool = refRows.length > 0 ? refRows : makeYearMatches;
   const sorted = [...pool].sort((a: any[], b: any[]) => a[5] - b[5]);
-  const medianRow = sorted[Math.floor(sorted.length / 2)];
-  return { refrigerant: medianRow[4] === 1 ? "R1234yf" : "R134a", grams: medianRow[5] as number };
+  return { refrigerant: sorted[Math.floor(sorted.length / 2)][4] === 1 ? "R1234yf" : "R134a", grams: sorted[Math.floor(sorted.length / 2)][5] as number };
 }
 
 async function lookupDVLA(reg: string) {
   try {
     const clean = reg.replace(/\s/g, "").toUpperCase();
-    const res = await fetch("/.netlify/functions/dvla", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ registrationNumber: clean }),
+    const res = await fetch("/api/dvla", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ registrationNumber: clean }),
     });
     if (!res.ok) throw new Error("DVLA error");
     const data = await res.json();
@@ -258,41 +185,28 @@ export default function App() {
   const handleRegLookup = async () => {
     const clean = reg.replace(/\s/g, "").toUpperCase();
     if (clean.length < 2) { setRegError("Please enter a valid UK registration plate."); return; }
-    setRegError("");
-    setLoading(true);
+    setRegError(""); setLoading(true);
     
     const dvla = await lookupDVLA(clean);
-    let make = "";
-    let year: number | null = null;
-    let model = "";
-    let engineCC: number | null = null;
-    let fuelType = "";
+    let make = "", year: number | null = null, model = "", engineCC: number | null = null, fuelType = "";
     
     if (dvla && dvla.year) {
-      make = dvla.make;
-      model = dvla.model;
-      year = dvla.year;
-      engineCC = dvla.engineCC;
-      fuelType = dvla.fuelType;
+      make = dvla.make; model = dvla.model; year = dvla.year; engineCC = dvla.engineCC; fuelType = dvla.fuelType;
     } else {
       year = decodeRegYear(clean);
     }
     
     if (!year) {
       setRegError("Couldn't recognise this registration. Please check and try again.");
-      setLoading(false);
-      return;
+      setLoading(false); return;
     }
 
-    let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
-    let grams = 600;
+    let refrigerant = year >= 2017 ? "R1234yf" : "R134a", grams = 600;
     
     if (vehicleData && vehicleData.length > 0 && make) {
       const match = lookupVehicle(vehicleData, make, model, year, engineCC, fuelType);
-      if (match) {
-        refrigerant = match.refrigerant;
-        grams = match.grams;
-      } else {
+      if (match) { refrigerant = match.refrigerant; grams = match.grams; }
+      else {
         const fb = YEAR_FALLBACK[year];
         if (fb) { refrigerant = fb[0] === 1 ? "R1234yf" : "R134a"; grams = fb[1]; }
       }
@@ -304,46 +218,40 @@ export default function App() {
     const price = calcPrice(refrigerant, grams);
     setIsPrivate(isPrivatePlate(clean));
     setCarInfo({ make: make || "Your Vehicle", model, year, refrigerant, grams, price, dvlaFound: !!dvla });
-    setLoading(false);
-    setStep(1);
+    setLoading(false); setStep(1);
   };
 
   const handleSubmit = async () => {
     if (!carInfo) return;
     setSubmitting(true);
     try {
-      const fd = new URLSearchParams();
-      fd.append("form-name", "smac-bookings");
-      fd.append("name", form.name);
-      fd.append("phone", form.phone);
-      fd.append("email", form.email);
-      fd.append("postcode", form.postcode);
-      fd.append("date", form.date);
-      fd.append("time", form.time);
-      fd.append("registration", reg.toUpperCase());
-      fd.append("make", carInfo.make);
-      fd.append("model", carInfo.model);
-      fd.append("year", String(carInfo.year));
-      fd.append("refrigerant", carInfo.refrigerant);
-      fd.append("grams", carInfo.grams + "g");
-      fd.append("total_price", "£" + carInfo.price.total);
+      const fd = new FormData();
       
-      await fetch("/", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: fd.toString() });
-      setDone(true);
-      setStep(3);
+      // YOUR WEB3FORMS KEY IS EMBEDDED HERE
+      fd.append("access_key", "207585dd-6dba-4de7-9b63-4a80fdeffa0f"); 
+      
+      fd.append("subject", "New AC Regas Booking - " + reg.toUpperCase());
+      fd.append("from_name", "SMAC Booking System");
+      fd.append("Name", form.name); fd.append("Phone", form.phone); fd.append("Email", form.email);
+      fd.append("Postcode", form.postcode); fd.append("Date", form.date); fd.append("Time", form.time);
+      fd.append("Registration", reg.toUpperCase()); fd.append("Make", carInfo.make); fd.append("Model", carInfo.model);
+      fd.append("Year", String(carInfo.year)); fd.append("Refrigerant", carInfo.refrigerant);
+      fd.append("Grams", carInfo.grams + "g"); fd.append("Total Price", "£" + carInfo.price.total);
+      
+      const res = await fetch("https://api.web3forms.com/submit", { method: "POST", body: fd });
+      if (!res.ok) throw new Error("Email failed");
+      
+      setDone(true); setStep(3);
     } catch {
-      alert("Something went wrong. Please call Bruce.");
+      alert("Something went wrong sending the email. Please try again.");
     }
     setSubmitting(false);
   };
 
   const handleManualLookup = () => {
     if (!manualMake.trim() || !carInfo) return;
-    const make = manualMake.trim().toUpperCase();
-    const model = manualModel.trim().toUpperCase();
-    const year = carInfo.year;
-    let refrigerant = year >= 2017 ? "R1234yf" : "R134a";
-    let grams = 600;
+    const make = manualMake.trim().toUpperCase(), model = manualModel.trim().toUpperCase(), year = carInfo.year;
+    let refrigerant = year >= 2017 ? "R1234yf" : "R134a", grams = 600;
     if (vehicleData && vehicleData.length > 0) {
       const match = lookupVehicle(vehicleData, make, model, year, null, ""); 
       if (match) { refrigerant = match.refrigerant; grams = match.grams; }
@@ -372,20 +280,16 @@ export default function App() {
         .plate::placeholder { color:rgba(0,0,0,0.3); }
       `}</style>
 
-      {/* Logo Area */}
       <div style={{ textAlign: "center", marginBottom: 24, animation: "fadeUp 0.4s ease" }}>
         <div style={{ width: 68, height: 68, borderRadius: "50%", background: "#1a1a1a", border: "2px solid #2a2a2a", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
           <div style={{ color: "#fff", fontFamily: "'Bebas Neue',sans-serif", fontSize: 19, letterSpacing: 3, lineHeight: 1 }}>SMAC</div>
-          <div style={{ display: "flex", gap: 1, marginTop: 3 }}>
-            {[0,1,2,3,4].map(i => <div key={i} style={{ width: 6, height: 3, background: i < 3 ? "#3b82f6" : "#ef4444", borderRadius: 1 }} />)}
-          </div>
+          <div style={{ display: "flex", gap: 1, marginTop: 3 }}>{[0,1,2,3,4].map(i => <div key={i} style={{ width: 6, height: 3, background: i < 3 ? "#3b82f6" : "#ef4444", borderRadius: 1 }} />)}</div>
         </div>
         <div style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 22, letterSpacing: 3 }}>Stockport Mobile Aircon</div>
         <div style={{ color: "#6b7280", fontSize: 13, marginTop: 3 }}>Car AC Regas · We Come To You</div>
       </div>
 
       <div style={{ width: "100%", maxWidth: 420, background: "#111", border: "1px solid #1f1f1f", borderRadius: 20, padding: "26px 22px", animation: "fadeUp 0.4s ease" }}>
-        {/* STEP 0 */}
         {step === 0 && (
           <div>
             <div style={{ color: "#6b7280", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, fontWeight: 700, marginBottom: 4 }}>Step 1</div>
@@ -405,7 +309,6 @@ export default function App() {
           </div>
         )}
 
-        {/* STEP 1 */}
         {step === 1 && carInfo && (
           <div>
             <div style={{ color: "#6b7280", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, fontWeight: 700, marginBottom: 4 }}>Step 2 — Your Quote</div>
@@ -454,7 +357,6 @@ export default function App() {
           </div>
         )}
 
-        {/* STEP 2 */}
         {step === 2 && (
           <div>
             <div style={{ color: "#6b7280", fontSize: 11, textTransform: "uppercase", letterSpacing: 2, fontWeight: 700, marginBottom: 4 }}>Step 3 — Your Details</div>
@@ -482,7 +384,6 @@ export default function App() {
           </div>
         )}
 
-        {/* STEP 3 */}
         {step === 3 && done && (
           <div style={{ textAlign: "center", animation: "fadeUp 0.4s ease" }}>
             <div style={{ width: 68, height: 68, borderRadius: "50%", background: "linear-gradient(135deg,#16a34a,#22c55e)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, margin: "0 auto 16px" }}>✓</div>
@@ -493,22 +394,6 @@ export default function App() {
           </div>
         )}
       </div>
-
-      <form name="smac-bookings" data-netlify="true" hidden>
-        <input type="text" name="name" />
-        <input type="text" name="phone" />
-        <input type="text" name="email" />
-        <input type="text" name="postcode" />
-        <input type="text" name="date" />
-        <input type="text" name="time" />
-        <input type="text" name="registration" />
-        <input type="text" name="make" />
-        <input type="text" name="model" />
-        <input type="text" name="year" />
-        <input type="text" name="refrigerant" />
-        <input type="text" name="grams" />
-        <input type="text" name="total_price" />
-      </form>
     </div>
   );
 }
